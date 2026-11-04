@@ -62,6 +62,7 @@ fun PlayerScreen(
     startPositionMs: Long,
     onBack: () -> Unit,
     viewModel: PlayerViewModel = viewModel(),
+    resumeConfirmed: Boolean = false,
 ) {
     val context = LocalContext.current
     val hostView = LocalView.current
@@ -123,12 +124,13 @@ fun PlayerScreen(
     }
     var debugSnapshot by remember { mutableStateOf(PlayerDebugSnapshot()) }
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
-    val session = remember(bvid, cid, aid, startPositionMs) {
+    val session = remember(bvid, cid, aid, startPositionMs, resumeConfirmed) {
         PlayerScreenSession(
             bvid = bvid,
             cid = cid,
             aid = aid,
             startPositionMs = startPositionMs,
+            resumeConfirmed = resumeConfirmed,
         )
     }
     val exitTrace = remember(session) { PlayerExitTrace(session) }

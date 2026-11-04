@@ -11,6 +11,9 @@ import com.bbttvv.app.core.store.TodayWatchProfileStore
 import com.bbttvv.app.core.store.TokenManager
 import com.bbttvv.app.core.util.Logger
 import com.bbttvv.app.data.repository.PlaybackRepository
+import com.bbttvv.app.system.TclPlaybackHistory
+import com.bbttvv.app.system.TclPlaybackMetadata
+import com.bbttvv.app.system.buildTclPlaybackRecord
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -54,6 +57,7 @@ private data class HeartbeatRuntimeState(
     val startTsSec: Long = 0L,
     val creatorMid: Long = 0L,
     val creatorName: String = "",
+    val desktopMetadata: TclPlaybackMetadata? = null,
     val accumulatedPlayMs: Long = 0L,
     val activePlayStartElapsedMs: Long? = null,
     val lastReportedSnapshot: PlaybackHeartbeatSnapshot? = null,
@@ -81,6 +85,7 @@ internal class PlaybackHistoryReporter(
         creatorMid: Long,
         creatorName: String,
         nowEpochSec: Long = System.currentTimeMillis() / 1000L,
+        desktopMetadata: TclPlaybackMetadata? = null,
     ) {
         ensureMainThread("PlaybackHistoryReporter.beginSession")
         heartbeatJob?.cancel()
@@ -91,6 +96,7 @@ internal class PlaybackHistoryReporter(
             startTsSec = nowEpochSec,
             creatorMid = creatorMid,
             creatorName = creatorName,
+            desktopMetadata = desktopMetadata,
         )
 
         if (bvid.isBlank() || cid <= 0L) {
@@ -109,7 +115,7 @@ internal class PlaybackHistoryReporter(
     @MainThread
     fun finishSession(reason: String, closeSession: Boolean = true) {
         ensureMainThread("PlaybackHistoryReporter.finishSession")
-        val report = captureHeartbeatReport(forceFlush = true)
+        val report = captureHeartbeatReport(forceFlush = true, ended = reason == "ended")
         if (closeSession) {
             clear()
         }
@@ -121,6 +127,12 @@ internal class PlaybackHistoryReporter(
                 updateSessionState = false,
             )
         }
+    }
+
+    @MainThread
+    fun flushDesktopHistory() {
+        ensureMainThread("PlaybackHistoryReporter.flushDesktopHistory")
+        captureHeartbeatReport(forceFlush = true)
     }
 
     @MainThread
@@ -197,7 +209,7 @@ internal class PlaybackHistoryReporter(
     }
 
     @MainThread
-    private fun captureHeartbeatReport(forceFlush: Boolean): PlaybackHeartbeatReport? {
+    private fun captureHeartbeatReport(forceFlush: Boolean, ended: Boolean = false): PlaybackHeartbeatReport? {
         ensureMainThread("PlaybackHistoryReporter.captureHeartbeatReport")
         var session = heartbeatRuntime
         if ((session.aid <= 0L && session.bvid.isBlank()) || session.cid <= 0L) return null
@@ -218,6 +230,22 @@ internal class PlaybackHistoryReporter(
             lastReportedSnapshot = session.lastReportedSnapshot
         )
         if (!shouldSend) return null
+
+        // Capture metadata and progress together on Main, before any network suspension or release.
+        val desktopRecord = buildTclPlaybackRecord(
+            bvid = session.bvid,
+            cid = session.cid,
+            metadata = session.desktopMetadata,
+            positionMs = snapshot.playedTimeSec * 1000L,
+            durationMs = snapshot.durationMs,
+            realPlayedTimeSec = snapshot.realPlayedTimeSec,
+            watchedAtMs = System.currentTimeMillis(),
+            ended = ended,
+        )
+        val context = NetworkModule.appContext
+        if (desktopRecord != null && context != null) {
+            TclPlaybackHistory.publish(context, desktopRecord)
+        }
 
         if (session.startTsSec <= 0L) {
             session = session.copy(startTsSec = System.currentTimeMillis() / 1000L)

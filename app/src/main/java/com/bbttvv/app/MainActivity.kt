@@ -1,6 +1,7 @@
 package com.bbttvv.app
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -10,6 +11,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.isDebugInspectorInfoEnabled
@@ -17,6 +21,8 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import com.bbttvv.app.app.BbtvApplication
 import com.bbttvv.app.navigation.AppNavigation
+import com.bbttvv.app.system.LauncherResumeRequest
+import com.bbttvv.app.system.TclPlaybackHistory
 import com.bbttvv.app.ui.components.LocalTvNoticeHostState
 import com.bbttvv.app.ui.components.TvNoticeHost
 import com.bbttvv.app.ui.components.rememberTvNoticeHostState
@@ -37,10 +43,16 @@ import com.bbttvv.app.ui.theme.AppTheme
 class MainActivity : ComponentActivity() {
     private val tvFocusEscapeGuard = TvFocusEscapeGuard()
     private val tvFocusReturn = TvFocusReturn()
+    private var launcherResume by mutableStateOf<LauncherResumeRequest?>(null)
+    private var launcherResumeConsumed = false
 
     @OptIn(ExperimentalTvMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        launcherResumeConsumed = savedInstanceState?.getBoolean("launcherResumeConsumed") ?: false
+        if (!launcherResumeConsumed) {
+            launcherResume = TclPlaybackHistory.resumeRequest(intent, packageName)
+        }
         isDebugInspectorInfoEnabled = false
         setContent {
             val tvNoticeHostState = rememberTvNoticeHostState()
@@ -70,12 +82,31 @@ class MainActivity : ComponentActivity() {
                         LocalTvFocusReturn provides tvFocusReturn,
                         LocalTvNoticeHostState provides tvNoticeHostState,
                     ) {
-                        AppNavigation()
+                        AppNavigation(
+                            launcherResume = launcherResume,
+                            onLauncherResumeConsumed = {
+                                launcherResume = null
+                                launcherResumeConsumed = true
+                            },
+                        )
                     }
                     TvNoticeHost(state = tvNoticeHostState)
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val request = TclPlaybackHistory.resumeRequest(intent, packageName) ?: return
+        setIntent(intent)
+        launcherResumeConsumed = false
+        launcherResume = request
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("launcherResumeConsumed", launcherResumeConsumed)
+        super.onSaveInstanceState(outState)
     }
 
     @SuppressLint("RestrictedApi")

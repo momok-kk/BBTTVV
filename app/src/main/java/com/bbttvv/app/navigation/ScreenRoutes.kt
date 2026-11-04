@@ -25,14 +25,15 @@ sealed class ScreenRoutes(val route: String) {
         }
     }
 
-    data object VideoPlayer : ScreenRoutes("video_player/{bvid}?cid={cid}&aid={aid}&startPositionMs={startPositionMs}") {
+    data object VideoPlayer : ScreenRoutes("video_player/{bvid}?cid={cid}&aid={aid}&startPositionMs={startPositionMs}&resumeConfirmed={resumeConfirmed}") {
         fun createRoute(
             bvid: String,
             cid: Long = 0L,
             aid: Long = 0L,
-            startPositionMs: Long = 0L
+            startPositionMs: Long = 0L,
+            resumeConfirmed: Boolean = false,
         ): String {
-            return "video_player/${Uri.encode(bvid)}?cid=$cid&aid=$aid&startPositionMs=$startPositionMs"
+            return "video_player/${Uri.encode(bvid)}?cid=$cid&aid=$aid&startPositionMs=$startPositionMs&resumeConfirmed=$resumeConfirmed"
         }
     }
 

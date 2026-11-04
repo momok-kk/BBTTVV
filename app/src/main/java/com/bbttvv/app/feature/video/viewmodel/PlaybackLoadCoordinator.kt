@@ -18,6 +18,7 @@ import com.bbttvv.app.feature.video.usecase.PlaybackLoadResult
 import com.bbttvv.app.feature.video.usecase.PlaybackSource
 import com.bbttvv.app.feature.video.usecase.ResumePlaybackCandidate as RemoteResumePlaybackCandidate
 import com.bbttvv.app.feature.video.usecase.VideoPlaybackUseCase
+import com.bbttvv.app.system.TclPlaybackMetadata
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -247,6 +248,12 @@ internal class PlaybackLoadCoordinator(
             cid = result.info.cid,
             creatorMid = result.info.owner.mid,
             creatorName = result.info.owner.name,
+            // Branch state cannot be reconstructed from bvid/cid alone for interactive videos.
+            desktopMetadata = if (result.info.isSteinGate == 0) TclPlaybackMetadata(
+                title = result.info.title,
+                coverUrl = result.info.pic,
+                episodeName = result.pages.firstOrNull { it.cid == result.info.cid }?.part.orEmpty(),
+            ) else null,
         )
         if (isDanmakuEnabled()) {
             requestDanmakuLoad(

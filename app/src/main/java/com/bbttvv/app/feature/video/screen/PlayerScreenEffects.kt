@@ -54,6 +54,7 @@ internal data class PlayerScreenSession(
     val cid: Long,
     val aid: Long,
     val startPositionMs: Long,
+    val resumeConfirmed: Boolean = false,
 )
 
 internal data class PlayerScreenEffectArgs(
@@ -226,6 +227,7 @@ internal fun PlayerScreenEffectHost(
             aid = args.session.aid,
             cid = args.session.cid,
             startPositionMs = args.session.startPositionMs,
+            resumeFromPrompt = args.session.resumeConfirmed,
         )
     }
 

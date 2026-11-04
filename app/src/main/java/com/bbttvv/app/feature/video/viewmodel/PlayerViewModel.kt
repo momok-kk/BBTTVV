@@ -473,6 +473,7 @@ class PlayerViewModel : BasePlayerViewModel() {
         isAppInBackground = true
         isPlaybackSuspendedForBackground = true
         playerEngine?.pause()
+        playbackHistoryReporter.flushDesktopHistory()
         playerPollingJob?.cancel()
         playerPollingJob = null
         playbackCdnFallbackJob?.cancel()

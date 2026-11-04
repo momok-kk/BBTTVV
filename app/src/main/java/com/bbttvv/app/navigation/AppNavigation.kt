@@ -18,6 +18,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.withResumed
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -36,6 +38,7 @@ import com.bbttvv.app.feature.live.LivePlayerScreen
 import com.bbttvv.app.feature.publisher.PublisherScreen
 import com.bbttvv.app.feature.bangumi.BangumiDetailScreen
 import com.bbttvv.app.feature.video.screen.PlayerScreen
+import com.bbttvv.app.system.LauncherResumeRequest
 
 import com.bbttvv.app.ui.components.AppTopLevelTab
 import com.bbttvv.app.ui.components.LocalTvNoticeHostState
@@ -49,8 +52,12 @@ import com.bbttvv.app.ui.focus.LocalTvFocusReturn
 import com.bbttvv.app.ui.focus.RegisterLifecycleFocusDrain
 
 @Composable
-fun AppNavigation() {
+fun AppNavigation(
+    launcherResume: LauncherResumeRequest? = null,
+    onLauncherResumeConsumed: () -> Unit = {},
+) {
     val context = LocalContext.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val tvNoticeHostState = LocalTvNoticeHostState.current
     val navController = rememberNavController()
     val navigationState = rememberAppNavigationState()
@@ -148,6 +155,27 @@ fun AppNavigation() {
 
     BackHandler(enabled = isOnHome) {
         handleHomeExitRequest()
+    }
+
+    LaunchedEffect(launcherResume) {
+        val request = launcherResume ?: return@LaunchedEffect
+        lifecycle.withResumed {
+            navigationState.prepareForDirectDetailOpen()
+            settingsReturnKey = null
+            tvFocusReturn?.clear()
+            navController.navigate(
+                ScreenRoutes.VideoPlayer.createRoute(
+                    bvid = request.bvid,
+                    cid = request.cid,
+                    startPositionMs = request.positionMs,
+                    resumeConfirmed = true,
+                ),
+            ) {
+                // Replace any old player session; Back returns to the existing Home focus domain.
+                popUpTo(ScreenRoutes.Home.route)
+            }
+            onLauncherResumeConsumed()
+        }
     }
 
     NavHost(
@@ -300,6 +328,10 @@ fun AppNavigation() {
                 navArgument("startPositionMs") {
                     type = NavType.LongType
                     defaultValue = 0L
+                },
+                navArgument("resumeConfirmed") {
+                    type = NavType.BoolType
+                    defaultValue = false
                 }
             )
         ) { backStackEntry ->
@@ -312,6 +344,7 @@ fun AppNavigation() {
                 cid = cid,
                 aid = aid,
                 startPositionMs = startPositionMs,
+                resumeConfirmed = backStackEntry.arguments?.getBoolean("resumeConfirmed") ?: false,
                 onBack = { navController.popBackStack() },
             )
         }
