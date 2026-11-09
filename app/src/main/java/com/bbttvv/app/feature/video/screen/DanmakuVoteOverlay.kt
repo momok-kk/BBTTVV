@@ -292,8 +292,6 @@ internal fun BoxScope.DanmakuVoteOverlay(
                 Text(if (prompt.kind == DanmakuVoteKind.Grade) "打分成功" else "投票成功", color = Color(0xFF9BE8C2), fontSize = 14.sp)
             } else if (prompt.selectedOptionId > 0) {
                 Text(if (prompt.kind == DanmakuVoteKind.Grade) "你已经参与过该打分" else "你已经参与过该投票", color = Color(0xFFB7C7FF), fontSize = 14.sp)
-            } else if (prompt.kind == DanmakuVoteKind.Grade) {
-                Text("${activeIndex.intValue + 1} 星 · 左右选择 · 确认打分 · 返回关闭", color = Color.White, fontSize = 14.sp)
             }
         }
     }

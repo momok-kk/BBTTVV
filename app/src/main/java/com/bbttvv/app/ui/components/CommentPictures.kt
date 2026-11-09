@@ -543,11 +543,6 @@ internal fun CommentImageViewer(
                     fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
-                Text(
-                    text = "左右切换 · 确认或返回关闭",
-                    color = Color.White.copy(alpha = 0.68f),
-                    fontSize = 12.sp,
-                )
             }
         }
     }
