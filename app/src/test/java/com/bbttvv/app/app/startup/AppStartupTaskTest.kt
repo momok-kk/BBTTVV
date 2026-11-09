@@ -32,6 +32,17 @@ class AppStartupTaskTest {
     }
 
     @Test
+    fun `app update check is deferred to io after first frame`() {
+        val deferredDelayMs = 800L
+        val task = defaultAppStartupTasks(deferredDelayMs)
+            .single { it.id == "app_update_check" }
+
+        assertEquals(StartupPhase.AFTER_FIRST_INTERACTIVE, task.phase)
+        assertEquals(StartupThread.IO, task.thread)
+        assertEquals(deferredDelayMs, task.delayMs)
+    }
+
+    @Test
     fun `deferred startup failure is isolated`() {
         val task = AppStartupTask(
             id = "optional",

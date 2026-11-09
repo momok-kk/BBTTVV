@@ -17,6 +17,7 @@ import com.bbttvv.app.core.plugin.json.JsonPluginManager
 import com.bbttvv.app.core.store.PlayerSettingsCache
 import com.bbttvv.app.core.store.SettingsManager
 import com.bbttvv.app.core.store.TokenManager
+import com.bbttvv.app.core.update.AppUpdateController
 import com.bbttvv.app.core.util.CrashReporter
 import com.bbttvv.app.core.util.Logger
 import com.bbttvv.app.data.repository.DanmakuRepository
@@ -172,6 +173,11 @@ class BbtvApplication : Application(), ImageLoaderFactory, ComponentCallbacks2 {
                     // Disabled by default: enabling it only re-filters already loaded feeds.
                     PluginManager.register(PiliNaraFeedFilterPlugin())
                     syncBuiltInPluginState()
+                }
+                "app_update_check" -> {
+                    AppUpdateController.initialize(this)
+                    AppUpdateController.cleanupStaleArtifacts()
+                    AppUpdateController.checkForUpdates(manual = false)
                 }
             }
         }

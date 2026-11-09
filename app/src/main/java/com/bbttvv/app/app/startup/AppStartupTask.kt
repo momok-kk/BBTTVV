@@ -85,6 +85,12 @@ internal fun defaultAppStartupTasks(
             phase = StartupPhase.AFTER_FIRST_INTERACTIVE,
             thread = StartupThread.IO,
             delayMs = deferredDelayMs
+        ),
+        AppStartupTask(
+            id = "app_update_check",
+            phase = StartupPhase.AFTER_FIRST_INTERACTIVE,
+            thread = StartupThread.IO,
+            delayMs = deferredDelayMs
         )
     )
 }

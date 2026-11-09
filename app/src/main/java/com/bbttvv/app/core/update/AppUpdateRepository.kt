@@ -10,6 +10,8 @@ import java.net.SocketTimeoutException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -31,6 +33,7 @@ data class AvailableAppUpdate(
 
 sealed interface AppUpdateCheckResult {
     data object NoCompatibleApk : AppUpdateCheckResult
+    data class UpToDate(val currentVersionName: String) : AppUpdateCheckResult
     data class UpdateAvailable(val update: AvailableAppUpdate) : AppUpdateCheckResult
 }
 
@@ -52,72 +55,114 @@ class AppUpdateRepository(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun checkLatest(): AppUpdateCheckResult = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
-            .url(GITHUB_LATEST_RELEASE_URL)
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "BBTTVV-update-checker")
-            .build()
-        val release = httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IllegalStateException(resolveGithubHttpError(response.code, response.body?.string()))
-            }
-            val body = response.body?.string() ?: error("GitHub 返回为空")
-            json.decodeFromString(GithubRelease.serializer(), body)
-        }
-        val asset = selectCompatibleApk(release.assets, Build.SUPPORTED_ABIS)
-            ?: return@withContext AppUpdateCheckResult.NoCompatibleApk
-        AppUpdateCheckResult.UpdateAvailable(
-            AvailableAppUpdate(
-                versionName = asset.name.removeSuffix(".apk").removePrefix("BBTTVV-"),
-                releaseNotes = release.body.orEmpty().trim(),
-                downloadUrl = asset.downloadUrl,
-                sha256 = asset.digest?.removePrefix("sha256:")?.takeIf { it.length == 64 },
-            )
-        )
-    }
-
-    suspend fun downloadAndVerify(update: AvailableAppUpdate): AppUpdateDownloadResult =
+    suspend fun checkLatest(currentVersionName: String): AppUpdateCheckResult =
         withContext(Dispatchers.IO) {
-            val updatesDir = File(appContext.cacheDir, "updates").apply { mkdirs() }
-            val target = File(updatesDir, "BBTTVV-update.apk")
-            val temporary = File(updatesDir, "BBTTVV-update.apk.part")
-            temporary.delete()
-
-            try {
-                val request = Request.Builder()
-                    .url(update.downloadUrl)
-                    .header("Accept", APK_MIME_TYPE)
-                    .header("User-Agent", "BBTTVV-updater")
-                    .build()
-                httpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        return@withContext AppUpdateDownloadResult.Rejected(
-                            "下载失败（${response.code}）"
-                        )
-                    }
-                    val body = response.body ?: return@withContext AppUpdateDownloadResult.Rejected("更新包为空")
-                    body.byteStream().use { input ->
-                        temporary.outputStream().buffered().use { output -> input.copyTo(output) }
-                    }
+            val request = Request.Builder()
+                .url(GITHUB_LATEST_RELEASE_URL)
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "BBTTVV-update-checker")
+                .build()
+            val release = httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw IllegalStateException(resolveGithubHttpError(response.code, response.body?.string()))
                 }
-                if (update.sha256 != null && sha256(temporary) != update.sha256.lowercase()) {
-                    return@withContext AppUpdateDownloadResult.Rejected("更新包校验失败，请稍后重试")
-                }
-                when (val verification = verifyApk(temporary)) {
-                    is ApkVerification.Accepted -> {
-                        target.delete()
-                        if (!temporary.renameTo(target)) {
-                            return@withContext AppUpdateDownloadResult.Rejected("无法保存更新包")
-                        }
-                        AppUpdateDownloadResult.ReadyToInstall(target, verification.versionName)
-                    }
-                    is ApkVerification.Rejected -> AppUpdateDownloadResult.Rejected(verification.reason)
-                }
-            } finally {
-                temporary.delete()
+                val body = response.body?.string() ?: error("GitHub 返回为空")
+                json.decodeFromString(GithubRelease.serializer(), body)
             }
+            val asset = selectCompatibleApk(release.assets, Build.SUPPORTED_ABIS)
+                ?: return@withContext AppUpdateCheckResult.NoCompatibleApk
+            // A release tag is the version identifier; the asset filename is only a fallback.
+            // This comparison decides whether to show a prompt, never whether an APK may be
+            // installed - verifyApk() remains the security boundary.
+            val releaseVersion = resolveReleaseVersion(release.tagName, asset.name)
+            if (releaseVersion != null && !shouldOfferUpdate(releaseVersion, currentVersionName)) {
+                return@withContext AppUpdateCheckResult.UpToDate(currentVersionName)
+            }
+            AppUpdateCheckResult.UpdateAvailable(
+                AvailableAppUpdate(
+                    versionName = releaseVersion ?: asset.name.removeSuffix(".apk"),
+                    releaseNotes = release.body.orEmpty().trim(),
+                    downloadUrl = asset.downloadUrl,
+                    sha256 = asset.digest?.removePrefix("sha256:")?.takeIf { it.length == 64 },
+                )
+            )
         }
+
+    suspend fun downloadAndVerify(
+        update: AvailableAppUpdate,
+        onProgress: (AppUpdateDownloadProgress) -> Unit = {},
+    ): AppUpdateDownloadResult = withContext(Dispatchers.IO) {
+        val updatesDir = File(appContext.cacheDir, "updates").apply { mkdirs() }
+        val target = File(updatesDir, AppUpdateArtifacts.APK_FILE_NAME)
+        val temporary = File(updatesDir, AppUpdateArtifacts.PART_FILE_NAME)
+        // No installer is reading a file when a fresh download starts. Clearing here also
+        // removes an older APK that was never installed.
+        AppUpdateArtifacts.cleanup(appContext)
+        var readyToInstall = false
+
+        try {
+            val request = Request.Builder()
+                .url(update.downloadUrl)
+                .header("Accept", APK_MIME_TYPE)
+                .header("User-Agent", "BBTTVV-updater")
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext AppUpdateDownloadResult.Rejected(
+                        "下载失败（${response.code}）"
+                    )
+                }
+                val body = response.body ?: return@withContext AppUpdateDownloadResult.Rejected("更新包为空")
+                val totalBytes = body.contentLength()
+                var bytesDownloaded = 0L
+                var lastReportedBytes = 0L
+                var lastPercent: Int? = null
+                body.byteStream().use { input ->
+                    temporary.outputStream().buffered().use { output ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                            bytesDownloaded += count
+                            val progress = AppUpdateDownloadProgress(bytesDownloaded, totalBytes)
+                            val percent = progress.percentOrNull()
+                            val shouldReport = if (percent != null) {
+                                percent != lastPercent
+                            } else {
+                                bytesDownloaded - lastReportedBytes >=
+                                    UNKNOWN_LENGTH_REPORT_INTERVAL_BYTES
+                            }
+                            if (shouldReport) {
+                                lastPercent = percent
+                                lastReportedBytes = bytesDownloaded
+                                onProgress(progress)
+                            }
+                        }
+                        output.flush()
+                    }
+                }
+                onProgress(AppUpdateDownloadProgress(bytesDownloaded, totalBytes))
+            }
+            if (update.sha256 != null && sha256(temporary) != update.sha256.lowercase()) {
+                return@withContext AppUpdateDownloadResult.Rejected("更新包校验失败，请稍后重试")
+            }
+            when (val verification = verifyApk(temporary)) {
+                is ApkVerification.Accepted -> {
+                    if (!temporary.renameTo(target)) {
+                        return@withContext AppUpdateDownloadResult.Rejected("无法保存更新包")
+                    }
+                    readyToInstall = true
+                    AppUpdateDownloadResult.ReadyToInstall(target, verification.versionName)
+                }
+                is ApkVerification.Rejected -> AppUpdateDownloadResult.Rejected(verification.reason)
+            }
+        } finally {
+            temporary.delete()
+            if (!readyToInstall) target.delete()
+        }
+    }
 
     private fun verifyApk(apk: File): ApkVerification {
         val archive = appContext.packageManager.getPackageArchiveInfo(
@@ -209,6 +254,7 @@ private fun sha256(bytes: ByteArray): String =
 private data class GithubRelease(
     val body: String? = null,
     val assets: List<GithubReleaseAsset> = emptyList(),
+    @SerialName("tag_name") val tagName: String? = null,
 )
 
 @Serializable

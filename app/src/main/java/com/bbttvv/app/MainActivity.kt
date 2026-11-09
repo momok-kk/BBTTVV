@@ -19,6 +19,7 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import com.bbttvv.app.app.BbtvApplication
 import com.bbttvv.app.navigation.AppNavigation
+import com.bbttvv.app.ui.components.AppUpdatePromptHost
 import com.bbttvv.app.ui.components.LocalTvNoticeHostState
 import com.bbttvv.app.ui.components.TvNoticeHost
 import com.bbttvv.app.ui.components.rememberTvNoticeHostState
@@ -65,6 +66,7 @@ class MainActivity : ComponentActivity() {
                         LocalTvNoticeHostState provides tvNoticeHostState,
                     ) {
                         AppNavigation()
+                        AppUpdatePromptHost()
                     }
                     TvNoticeHost(state = tvNoticeHostState)
                 }

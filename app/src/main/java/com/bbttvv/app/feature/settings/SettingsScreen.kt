@@ -60,16 +60,15 @@ import com.bbttvv.app.core.store.SettingsManager
 import com.bbttvv.app.core.store.TokenManager
 import com.bbttvv.app.core.store.formatPlayerVolumeCalibrationLabel
 import com.bbttvv.app.core.store.player.PlayerSettingsStore
-import com.bbttvv.app.core.update.AppUpdateCheckResult
-import com.bbttvv.app.core.update.AppUpdateDownloadResult
-import com.bbttvv.app.core.update.AppUpdateInstaller
-import com.bbttvv.app.core.update.AppUpdateRepository
-import com.bbttvv.app.core.update.AvailableAppUpdate
-import com.bbttvv.app.core.update.resolveUpdateNetworkError
+import com.bbttvv.app.core.update.AppUpdateController
+import com.bbttvv.app.core.update.AppUpdateEventKind
+import com.bbttvv.app.core.update.AppUpdatePromptSource
+import com.bbttvv.app.core.update.percentOrNull
 import com.bbttvv.app.core.util.CacheUtils
 import com.bbttvv.app.data.repository.BlockedUpRepository
 import com.bbttvv.app.data.model.VideoQuality
 import com.bbttvv.app.feature.plugin.isAllowedCustomCdnHost
+import com.bbttvv.app.ui.components.AppUpdateDialog
 import com.bbttvv.app.ui.components.LocalTvNoticeHostState
 import com.bbttvv.app.ui.components.TvDialog
 import com.bbttvv.app.ui.components.TvDialogActionButton
@@ -342,7 +341,6 @@ fun TvSettingsList(
     val tvNoticeHostState = LocalTvNoticeHostState.current
     val scope = rememberCoroutineScope()
     val blockedUpRepository = remember(context) { BlockedUpRepository(context.applicationContext) }
-    val updateRepository = remember(context) { AppUpdateRepository(context.applicationContext) }
 
     val appSettings by SettingsManager.getSettingsSnapshot(context)
         .collectAsStateWithLifecycle(initialValue = SettingsManager.getSettingsSnapshotSync(context))
@@ -382,11 +380,11 @@ fun TvSettingsList(
     var isClearingCache by remember { mutableStateOf(false) }
     var showUserAgentDialog by remember { mutableStateOf(false) }
     var showCustomCdnDialog by remember { mutableStateOf(false) }
-    var showUpdateDialog by remember { mutableStateOf(false) }
-    var availableUpdate by remember { mutableStateOf<AvailableAppUpdate?>(null) }
-    var updateError by remember { mutableStateOf<String?>(null) }
-    var isCheckingUpdate by remember { mutableStateOf(false) }
-    var isDownloadingUpdate by remember { mutableStateOf(false) }
+    val updateState by AppUpdateController.state.collectAsStateWithLifecycle()
+    val isCheckingUpdate = updateState.isChecking
+    val isDownloadingUpdate = updateState.isDownloading
+    val manualUpdatePrompt = updateState.prompt
+        ?.takeIf { it.source == AppUpdatePromptSource.MANUAL }
     var customCdnValidationMessage by remember { mutableStateOf<String?>(null) }
     var activeChoice by remember { mutableStateOf<SettingsChoice?>(null) }
     var userAgentDraft by remember { mutableStateOf(DEFAULT_APP_USER_AGENT) }
@@ -411,6 +409,19 @@ fun TvSettingsList(
             CacheUtils.getTotalCacheSize(context.applicationContext)
         }.getOrElse {
             "\u8BA1\u7B97\u5931\u8D25"
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        AppUpdateController.initialize(context.applicationContext)
+        AppUpdateController.events.collect { event ->
+            tvNoticeHostState.show(
+                message = event.message,
+                kind = when (event.kind) {
+                    AppUpdateEventKind.INFO -> TvNoticeKind.Info
+                    AppUpdateEventKind.ERROR -> TvNoticeKind.Error
+                },
+            )
         }
     }
 
@@ -1000,12 +1011,15 @@ fun TvSettingsList(
                     title = "检查应用更新",
                     subtitle = when {
                         isCheckingUpdate -> "正在从 GitHub 检查最新版本..."
-                        isDownloadingUpdate -> "正在下载更新包，请勿退出此页面..."
+                        isDownloadingUpdate -> updateState.progress?.percentOrNull()
+                            ?.let { "正在下载更新包 $it%，请勿退出此页面..." }
+                            ?: "正在下载更新包，请勿退出此页面..."
                         else -> "手动检查 GitHub Release；下载后由电视系统确认安装。"
                     },
                     value = when {
                         isCheckingUpdate -> "检查中"
-                        isDownloadingUpdate -> "下载中"
+                        isDownloadingUpdate -> updateState.progress?.percentOrNull()
+                            ?.let { "$it%" } ?: "下载中"
                         else -> "检查"
                     },
                     kind = SettingsRowKind.Action,
@@ -1014,31 +1028,7 @@ fun TvSettingsList(
                         leftModifier.focusRequester(checkUpdateFocusRequester),
                     ),
                     enabled = !isCheckingUpdate && !isDownloadingUpdate,
-                    onClick = {
-                        isCheckingUpdate = true
-                        updateError = null
-                        scope.launch {
-                            try {
-                                when (val result = updateRepository.checkLatest()) {
-                                    AppUpdateCheckResult.NoCompatibleApk -> {
-                                        tvNoticeHostState.show(
-                                            "当前电视架构没有可用的更新包",
-                                            kind = TvNoticeKind.Error,
-                                        )
-                                    }
-                                    is AppUpdateCheckResult.UpdateAvailable -> {
-                                        availableUpdate = result.update
-                                        showUpdateDialog = true
-                                    }
-                                }
-                            } catch (error: Exception) {
-                                updateError = resolveUpdateNetworkError(error)
-                                tvNoticeHostState.show(updateError.orEmpty(), kind = TvNoticeKind.Error)
-                            } finally {
-                                isCheckingUpdate = false
-                            }
-                        }
-                    },
+                    onClick = { AppUpdateController.checkForUpdates(manual = true) },
                 )
             }
 
@@ -1122,66 +1112,17 @@ fun TvSettingsList(
         )
     }
 
-    if (showUpdateDialog) {
-        val update = availableUpdate
-        TvDialog(
-            title = "发现新版本 ${update?.versionName.orEmpty()}",
-            onDismissRequest = { showUpdateDialog = false },
+    if (manualUpdatePrompt != null) {
+        AppUpdateDialog(
+            update = manualUpdatePrompt.update,
+            isDownloading = updateState.isDownloading,
+            progress = updateState.progress,
+            error = updateState.error,
             returnFocusKey = SettingsFocusReturnKeys.CheckUpdate,
             returnFocusFallbackKeys = listOf(SettingsFocusReturnKeys.Back),
-            content = {
-                Text(
-                    text = update?.releaseNotes?.takeIf { it.isNotBlank() }
-                        ?: "已发现适用于此电视的更新包。",
-                    color = if (com.bbttvv.app.ui.theme.LocalIsLightTheme.current) {
-                        Color(0xFF61666D)
-                    } else {
-                        Color(0xDDEAF2F8)
-                    },
-                    fontSize = 15.sp,
-                    lineHeight = 22.sp,
-                )
-                if (updateError != null) {
-                    Text(
-                        text = updateError.orEmpty(),
-                        color = MaterialTheme.colorScheme.error,
-                        fontSize = 14.sp,
-                    )
-                }
-            },
-            actions = {
-                TvDialogActionButton(
-                    text = "取消",
-                    onClick = { showUpdateDialog = false },
-                )
-                TvDialogActionButton(
-                    text = if (isDownloadingUpdate) "下载中" else "下载更新",
-                    onClick = {
-                        val updateToDownload = update ?: return@TvDialogActionButton
-                        if (isDownloadingUpdate) return@TvDialogActionButton
-                        if (!AppUpdateInstaller.canRequestInstalls(context)) {
-                            updateError = "请先在系统设置中允许 BBTTVV 安装未知应用，然后返回此处下载。"
-                            AppUpdateInstaller.openUnknownSourcesSettings(context)
-                            return@TvDialogActionButton
-                        }
-                        isDownloadingUpdate = true
-                        updateError = null
-                        scope.launch {
-                            when (val result = updateRepository.downloadAndVerify(updateToDownload)) {
-                                is AppUpdateDownloadResult.Rejected -> {
-                                    updateError = result.reason
-                                    isDownloadingUpdate = false
-                                }
-                                    is AppUpdateDownloadResult.ReadyToInstall -> {
-                                        isDownloadingUpdate = false
-                                        showUpdateDialog = false
-                                        AppUpdateInstaller.requestInstall(context, result.apkFile)
-                                    }
-                            }
-                        }
-                    },
-                )
-            },
+            onDismiss = AppUpdateController::dismissPrompt,
+            onIgnore = AppUpdateController::ignorePrompt,
+            onUpdate = AppUpdateController::startDownload,
         )
     }
 
