@@ -4,22 +4,21 @@ import java.io.ByteArrayInputStream
 import java.io.DataInputStream
 import java.util.zip.GZIPInputStream
 
-/** Binary framing kept independent of Android so real webmask files can be tested on the JVM. */
+/** Binary framing for Bilibili .webmask and .mobmask archives. */
 internal class WebMaskArchive private constructor(
     private val bytes: ByteArray,
     val segments: List<Segment>,
 ) {
     data class Segment(val startMs: Long, val offset: Int, val endOffset: Int)
     data class Frame(val timeMs: Long, val dataUri: String)
+    data class MobFrame(val timeMs: Long, val width: Int, val height: Int, val image: ByteArray)
 
     fun segmentIndexAt(positionMs: Long): Int = segments.indexOfLast { it.startMs <= positionMs }
 
     fun readFrames(index: Int): List<Frame> {
         val segment = segments[index]
         val frames = ArrayList<Frame>()
-        DataInputStream(
-            GZIPInputStream(ByteArrayInputStream(bytes, segment.offset, segment.endOffset - segment.offset)),
-        ).use { input ->
+        readGzip(index) { input ->
             var totalBytes = 0L
             while (true) {
                 val firstByte = input.read()
@@ -34,11 +33,43 @@ internal class WebMaskArchive private constructor(
                 val raw = ByteArray(length)
                 input.readFully(raw)
                 val dataUri = raw.toString(Charsets.UTF_8)
-                require(dataUri.startsWith("data:image/svg+xml;base64,"))
+                require(dataUri.startsWith("data:image/svg+xml;base64,", ignoreCase = true))
                 frames += Frame(timestamp, dataUri)
             }
         }
         return frames
+    }
+
+    fun readMobFrames(index: Int): List<MobFrame> {
+        val segment = segments[index]
+        val frames = ArrayList<MobFrame>()
+        readGzip(index) { input ->
+            var totalBytes = 0L
+            while (true) {
+                val firstByte = input.read()
+                if (firstByte == -1) break
+                val width = (firstByte shl 8) or input.readUnsignedByte()
+                val height = input.readUnsignedShort()
+                require(width in 1..4096 && height in 1..4096)
+                val timestamp = input.readLong()
+                require(timestamp >= segment.startMs && (frames.lastOrNull()?.timeMs ?: 0) <= timestamp)
+                val imageSize = (width.toLong() * height + 7L) / 8L
+                require(imageSize in 1..8 * 1024 * 1024)
+                totalBytes += 12L + imageSize
+                require(totalBytes <= 16 * 1024 * 1024 && frames.size < 2_000)
+                val image = ByteArray(imageSize.toInt())
+                input.readFully(image)
+                frames += MobFrame(timestamp, width, height, image)
+            }
+        }
+        return frames
+    }
+
+    private inline fun readGzip(index: Int, block: (DataInputStream) -> Unit) {
+        val segment = segments[index]
+        DataInputStream(
+            GZIPInputStream(ByteArrayInputStream(bytes, segment.offset, segment.endOffset - segment.offset)),
+        ).use(block)
     }
 
     companion object {

@@ -109,11 +109,23 @@ internal fun resolveDanmakuAppendStartIndex(
     previous: List<DanmakuData>,
     current: List<DanmakuData>,
 ): Int? {
-    if (previous.isEmpty() || current.size <= previous.size) return null
-    if (previous.indices.any { index -> !sameDanmakuRenderItem(previous[index], current[index]) }) return null
+    if (previous.isEmpty() || current.isEmpty()) return null
     val previousLastTime = previous.last().showAtTime
-    if (current.drop(previous.size).any { it.showAtTime < previousLastTime }) return null
-    return previous.size
+    val maxOverlap = minOf(previous.size, current.size)
+    for (overlap in maxOverlap downTo 1) {
+        val previousStart = previous.size - overlap
+        if ((0 until overlap).any { index ->
+                !sameDanmakuRenderItem(previous[previousStart + index], current[index])
+            }) {
+            continue
+        }
+        val appended = current.drop(overlap)
+        if (appended.isNotEmpty() && appended.any { it.showAtTime < previousLastTime }) {
+            continue
+        }
+        return overlap.takeIf { appended.isNotEmpty() }
+    }
+    return null
 }
 
 private fun sameDanmakuRenderItem(left: DanmakuData, right: DanmakuData): Boolean {
@@ -237,6 +249,7 @@ fun DanmakuOverlay(
             }
             view.maskEnabled = maskEnabled && isEnabled
             view.videoAspectRatio = videoAspectRatio
+            view.invalidate()
             val targetController = view.danmakuView.controller
             if (controller !== targetController) {
                 controller = targetController

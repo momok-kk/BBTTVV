@@ -55,6 +55,7 @@ data class LivePlayUrlData(
     val durl: List<LiveDurl>? = null,
     val quality_description: List<LiveQuality>? = null,
     val current_quality: Int = 0,
+    @SerialName("current_qn") val currentQn: Int = 0,
     val playurl_info: PlayurlInfo? = null
 )
 
@@ -89,6 +90,7 @@ data class CodecInfo(
     @SerialName("hdr_qn") val hdrQn: Int = 0,
     @SerialName("hdr_type") val hdrType: Int = 0,
     val eotf: Int = 0,
+    val drm: Boolean = false,
     val codecs: String = "",
     @SerialName("base_url") val baseUrl: String = "",
     val url_info: List<UrlInfo>? = null
@@ -111,8 +113,20 @@ data class LiveQuality(
     val qn: Int = 0,
     val desc: String = "",
     @SerialName("hdr_desc") val hdrDesc: String = "",
+    @SerialName("media_base_desc") val mediaBaseDesc: LiveQualityMediaDescription? = null,
     @SerialName("hdr_type") val hdrType: Int = 0,
     val eotf: Int = 0,
+)
+
+@Serializable
+data class LiveQualityMediaDescription(
+    @SerialName("detail_desc") val detail: LiveQualityDetailDescription? = null,
+)
+
+@Serializable
+data class LiveQualityDetailDescription(
+    val desc: String = "",
+    @SerialName("tag") val tags: List<String>? = null,
 )
 
 // --- 关注的直播 Response ---
@@ -283,7 +297,14 @@ data class LiveRoomDetailResponse(
 data class LiveRoomDetailData(
     @SerialName("room_info") val roomInfo: LiveRoomInfo? = null,
     @SerialName("anchor_info") val anchorInfo: LiveAnchorInfo? = null,
-    @SerialName("watched_show") val watchedShow: WatchedShow? = null
+    @SerialName("watched_show") val watchedShow: WatchedShow? = null,
+    @SerialName("video_enhancement") val videoEnhancement: LiveVideoEnhancementConfig? = null,
+)
+
+@Serializable
+data class LiveVideoEnhancementConfig(
+    @SerialName("is_enabled") val enabled: Boolean = false,
+    @SerialName("highest_quality") val highestQuality: Int = 250,
 )
 
 @Serializable

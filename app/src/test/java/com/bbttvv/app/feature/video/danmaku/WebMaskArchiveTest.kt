@@ -21,6 +21,17 @@ class WebMaskArchiveTest {
         assertEquals(listOf(10_000L, 10_033L), archive.readFrames(1).map { it.timeMs })
     }
 
+
+    @Test
+    fun `reads mobmask width height timestamp and packed pixels`() {
+        val archive = WebMaskArchive.parse(file(mobSegment(0, 2, 1, byteArrayOf(0b1000_0000.toByte()))))
+        val frames = archive.readMobFrames(0)
+        assertEquals(1, frames.size)
+        assertEquals(2, frames.single().width)
+        assertEquals(1, frames.single().height)
+        assertEquals(0L, frames.single().timeMs)
+        assertEquals(byteArrayOf(0b1000_0000.toByte()).toList(), frames.single().image.toList())
+    }
     @Test
     fun `seek selects segment by start timestamp including exact boundary and backward seek`() {
         val archive = WebMaskArchive.parse(file(segment(0), segment(10_000)))
@@ -45,6 +56,17 @@ class WebMaskArchiveTest {
         assertThrows(Exception::class.java) { archive.readFrames(0) }
     }
 
+
+    private fun mobSegment(timestamp: Long, width: Int, height: Int, image: ByteArray): ByteArray {
+        val buffer = ByteArrayOutputStream()
+        DataOutputStream(GZIPOutputStream(buffer)).use { output ->
+            output.writeShort(width)
+            output.writeShort(height)
+            output.writeLong(timestamp)
+            output.write(image)
+        }
+        return buffer.toByteArray()
+    }
     private fun segment(vararg timestamps: Long): ByteArray {
         val buffer = ByteArrayOutputStream()
         DataOutputStream(GZIPOutputStream(buffer)).use { output ->

@@ -23,17 +23,51 @@ object DanmakuMaskRepository {
     }
 
     suspend fun load(maskUrl: String): DanmakuMask? = withContext(Dispatchers.IO) {
-        val normalizedUrl = when {
-            maskUrl.startsWith("//") -> "https:$maskUrl"
-            maskUrl.startsWith("http://") || maskUrl.startsWith("https://") -> maskUrl
-            else -> return@withContext null
+        val normalizedUrl = normalizeUrl(maskUrl)
+        if (normalizedUrl == null) {
+            Logger.w("DanmakuMask", "Invalid mask URL")
+            return@withContext null
         }
-        val request = runCatching { Request.Builder().url(normalizedUrl).get().build() }.getOrNull()
-            ?: return@withContext null
-        val bytes = download(request) ?: return@withContext null
-        DanmakuMask.fromBinary(bytes).also {
-            Logger.w("DanmakuMask", if (it == null) "Invalid webmask header" else "Webmask loaded bytes=${bytes.size}")
+
+        val primary = loadFromUrl(normalizedUrl)
+        if (primary != null) return@withContext primary
+
+        // The API may return a webmask URL while the mobile endpoint only exposes mobmask,
+        // and vice versa. Try the paired format once before reporting an unavailable mask.
+        val alternateUrl = when {
+            normalizedUrl.contains("webmask", ignoreCase = true) ->
+                normalizedUrl.replace("webmask", "mobmask", ignoreCase = true)
+            normalizedUrl.contains("mobmask", ignoreCase = true) ->
+                normalizedUrl.replace("mobmask", "webmask", ignoreCase = true)
+            else -> null
         }
+        if (alternateUrl == null || alternateUrl == normalizedUrl) return@withContext null
+        Logger.w("DanmakuMask", "Trying alternate mask format")
+        loadFromUrl(alternateUrl)
+    }
+
+    private suspend fun loadFromUrl(normalizedUrl: String): DanmakuMask? {
+        val request = runCatching { Request.Builder().url(normalizedUrl).get().build() }
+            .onFailure { error -> Logger.w("DanmakuMask", "Invalid mask request: ${error.message}") }
+            .getOrNull() ?: return null
+        val bytes = download(request) ?: return null
+        return DanmakuMask.fromBinary(bytes, normalizedUrl).also { mask ->
+            val type = if (normalizedUrl.contains("mobmask", ignoreCase = true)) "mob" else "web"
+            Logger.w(
+                "DanmakuMask",
+                if (mask == null) {
+                    "Invalid ${type}mask header url=${normalizedUrl.substringBefore("?")} bytes=${bytes.size}"
+                } else {
+                    "Mask loaded type=$type bytes=${bytes.size} segments=${mask.segmentCount}"
+                },
+            )
+        }
+    }
+
+    private fun normalizeUrl(maskUrl: String): String? = when {
+        maskUrl.startsWith("//") -> "https:$maskUrl"
+        maskUrl.startsWith("http://") || maskUrl.startsWith("https://") -> maskUrl
+        else -> null
     }
 
     private suspend fun download(request: Request): ByteArray? = suspendCancellableCoroutine { continuation ->
@@ -42,7 +76,7 @@ object DanmakuMaskRepository {
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 if (!continuation.isActive) return
-                Logger.w("DanmakuMask", "Webmask download failed")
+                Logger.w("DanmakuMask", "Mask download failed: ${e.message}")
                 continuation.resume(null)
             }
 
@@ -50,11 +84,12 @@ object DanmakuMaskRepository {
                 val bytes = runCatching {
                     response.use {
                         if (!it.isSuccessful) {
-                            Logger.w("DanmakuMask", "Webmask HTTP status=${it.code}")
+                            Logger.w("DanmakuMask", "Mask HTTP status=${it.code}")
                             return@use null
                         }
-                        require(it.body.contentLength() <= MAX_MASK_BYTES)
-                        it.body.byteStream().use { input ->
+                        val body = it.body
+                        require(body.contentLength() <= MAX_MASK_BYTES)
+                        body.byteStream().use { input ->
                             val output = ByteArrayOutputStream()
                             val buffer = ByteArray(8192)
                             while (true) {
@@ -66,11 +101,10 @@ object DanmakuMaskRepository {
                             output.toByteArray()
                         }
                     }
+                }.onFailure { error ->
+                    Logger.w("DanmakuMask", "Mask body read failed: ${error.message}")
                 }.getOrNull()
-                if (continuation.isActive) {
-                    if (bytes == null) Logger.w("DanmakuMask", "Webmask body unavailable")
-                    continuation.resume(bytes)
-                }
+                if (continuation.isActive) continuation.resume(bytes)
             }
         })
     }

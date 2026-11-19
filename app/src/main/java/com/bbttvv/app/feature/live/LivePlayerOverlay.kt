@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -101,8 +103,14 @@ internal fun LiveOptionsPanel(
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold
         )
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            itemsIndexed(options) { index, option ->
+        val listState = rememberLazyListState()
+        LaunchedEffect(selectedIndex, options.size) {
+            if (selectedIndex in options.indices && listState.layoutInfo.visibleItemsInfo.none { it.index == selectedIndex }) {
+                listState.scrollToItem(selectedIndex)
+            }
+        }
+        LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            itemsIndexed(options, key = { _, option -> option.key }) { index, option ->
                 val selected = index == selectedIndex
                 Column(
                     modifier = Modifier
@@ -113,7 +121,7 @@ internal fun LiveOptionsPanel(
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = option.label,
+                        text = if (option.isSelected) "✓  ${option.label}" else option.label,
                         color = if (selected) Color.Black else Color.White,
                         fontSize = 16.sp,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
@@ -179,12 +187,33 @@ internal fun buildLivePanelOptions(
     uiState: LivePlayerUiState,
 ): List<PanelOption> {
     return when (activePanel) {
-        LiveOverlayAction.Quality -> uiState.qualityOptions.map { option ->
-            PanelOption(
-                key = option.qn.toString(),
-                label = option.label,
-                isSelected = option.qn == uiState.selectedQuality,
-            )
+        LiveOverlayAction.Quality -> buildList {
+            uiState.qualityOptions.forEach { option ->
+                add(PanelOption(
+                    key = option.qn.toString(),
+                    label = option.label,
+                    isSelected = option.qn == uiState.selectedQuality,
+                ))
+            }
+            if (uiState.videoEnhancementMaxQn > 0 && uiState.qualityOptions.any {
+                    liveQualityQn(it.qn) <= uiState.videoEnhancementMaxQn &&
+                        liveQualityHdrType(it.qn) == 0 && liveQualityEotf(it.qn) == 0
+                }
+            ) {
+                val status = when {
+                    uiState.videoEnhancementFailed -> "设备暂不支持"
+                    uiState.applyVideoEnhancement -> "开启"
+                    uiState.videoEnhancementEnabled -> "开启（当前档位不适用）"
+                    else -> "关闭"
+                }
+                val limit = uiState.qualityOptions.firstOrNull { it.qn == uiState.videoEnhancementMaxQn }
+                add(PanelOption(
+                    key = LIVE_VIDEO_ENHANCEMENT_OPTION_KEY,
+                    label = "画质增强 · $status",
+                    subtitle = limit?.let { "仅对${it.label}及以下生效" },
+                    presentation = PanelOptionPresentation.Setting,
+                ))
+            }
         }
         LiveOverlayAction.Line -> uiState.lineOptions.map { option ->
             PanelOption(

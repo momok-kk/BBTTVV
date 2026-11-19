@@ -1,121 +1,187 @@
 package com.bbttvv.app.feature.video.danmaku
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Matrix
-import android.graphics.Path
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.RectF
 import android.widget.FrameLayout
-import androidx.core.graphics.PathParser
 import com.bytedance.danmaku.render.engine.DanmakuView
+import com.bbttvv.app.core.util.Logger
+import com.caverock.androidsvg.SVG
+import java.util.Base64
+import kotlin.math.roundToInt
 
-/** Parsed paths are cached for one segment and resolved on Dispatchers.Default by the overlay. */
+/**
+ * Bilibili 的预计算弹幕蒙版。
+ *
+ * .webmask 的每帧是 Base64 SVG，.mobmask 的每帧是 1 bit/pixel 图像。这里只缓存
+ * 当前 segment 的压缩数据，并按当前时间解码一帧，避免长视频一次性展开所有图片。
+ */
 class DanmakuMask private constructor(
     private val archive: WebMaskArchive,
+    private val type: Type,
 ) {
-    private var cachedSegmentIndex = -1
-    private var cachedFrames: List<Frame> = emptyList()
-
-    @Synchronized
-    fun frameAt(positionMs: Long): Frame? {
-        val index = archive.segmentIndexAt(positionMs)
-        if (index < 0) return null
-        if (index != cachedSegmentIndex) {
-            cachedSegmentIndex = index
-            cachedFrames = try {
-                val records = archive.readFrames(index)
-                records.mapIndexed { frameIndex, record ->
-                    val svg = android.util.Base64.decode(
-                        record.dataUri.substringAfter(','), android.util.Base64.DEFAULT,
-                    ).toString(Charsets.UTF_8)
-                    parseFrame(
-                        record.timeMs,
-                        records.getOrNull(frameIndex + 1)?.timeMs
-                            ?: archive.segments.getOrNull(index + 1)?.startMs
-                            ?: (record.timeMs + 100L),
-                        svg,
-                    )
-                }
-            } catch (_: Exception) {
-                com.bbttvv.app.core.util.Logger.w("DanmakuMask", "Invalid webmask segment index=$index")
-                emptyList()
-            }
-        }
-        return cachedFrames.lastOrNull { positionMs >= it.startMs && positionMs < it.endMs }
-    }
-
-    companion object {
-        fun fromBinary(binary: ByteArray): DanmakuMask? =
-            runCatching { DanmakuMask(WebMaskArchive.parse(binary)) }.getOrNull()
-
-        private fun parseFrame(startMs: Long, endMs: Long, svg: String): Frame {
-            val viewBox = VIEW_BOX.find(svg)?.groupValues?.get(1)?.trim()?.split(Regex("[ ,]+"))
-            val width = numberAttribute(svg, "width") ?: viewBox?.getOrNull(2)?.toFloatOrNull() ?: 1920f
-            val height = numberAttribute(svg, "height") ?: viewBox?.getOrNull(3)?.toFloatOrNull() ?: 1080f
-            val viewBoxX = viewBox?.getOrNull(0)?.toFloatOrNull() ?: 0f
-            val viewBoxY = viewBox?.getOrNull(1)?.toFloatOrNull() ?: 0f
-            val viewBoxWidth = viewBox?.getOrNull(2)?.toFloatOrNull() ?: width
-            val viewBoxHeight = viewBox?.getOrNull(3)?.toFloatOrNull() ?: height
-            val transform = GROUP_TRANSFORM.find(svg)?.groupValues?.get(1).orEmpty()
-            val scale = SCALE_TRANSFORM.find(transform)
-            val scaleX = scale?.groupValues?.getOrNull(1)?.toFloatOrNull() ?: 1f
-            val scaleY = scale?.groupValues?.getOrNull(2)?.toFloatOrNull() ?: scaleX
-            val translate = TRANSLATE_TRANSFORM.find(transform)
-            val translateX = translate?.groupValues?.getOrNull(1)?.toFloatOrNull() ?: 0f
-            val translateY = translate?.groupValues?.getOrNull(2)?.toFloatOrNull() ?: 0f
-            val transformMatrix = Matrix().apply {
-                setScale(scaleX, scaleY)
-                postTranslate(translateX, translateY)
-            }
-            val paths = PATH_D.findAll(svg).mapNotNull { match ->
-                runCatching {
-                    PathParser.createPathFromPathData(match.groupValues[1]).also { it.transform(transformMatrix) }
-                }.getOrNull()
-            }.toList()
-            return Frame(
-                startMs = startMs,
-                endMs = endMs,
-                paths = paths,
-                viewBoxX = viewBoxX,
-                viewBoxY = viewBoxY,
-                viewBoxWidth = viewBoxWidth,
-                viewBoxHeight = viewBoxHeight,
-            )
-        }
-
-        private fun numberAttribute(svg: String, name: String): Float? =
-            Regex("\\b$name\\s*=\\s*[\\\"']([0-9.]+)").find(svg)?.groupValues?.get(1)?.toFloatOrNull()
-
-        private val VIEW_BOX = Regex("\\bviewBox\\s*=\\s*[\\\"']([^\\\"']+)", RegexOption.IGNORE_CASE)
-        private val GROUP_TRANSFORM = Regex("<g\\b[^>]*\\btransform\\s*=\\s*[\\\"']([^\\\"']+)", RegexOption.IGNORE_CASE)
-        private val SCALE_TRANSFORM = Regex("scale\\s*\\(\\s*([-+0-9.eE]+)(?:\\s*[, ]\\s*([-+0-9.eE]+))?\\s*\\)", RegexOption.IGNORE_CASE)
-        private val TRANSLATE_TRANSFORM = Regex("translate\\s*\\(\\s*([-+0-9.eE]+)(?:\\s*[, ]\\s*([-+0-9.eE]+))?\\s*\\)", RegexOption.IGNORE_CASE)
-        private val PATH_D = Regex("<path\\b[^>]*\\bd\\s*=\\s*[\\\"']([^\\\"']+)", RegexOption.IGNORE_CASE)
-    }
-
-
+    enum class Type { Web, Mob }
 
     data class Frame(
         val startMs: Long,
         val endMs: Long,
-        val paths: List<Path>,
-        val viewBoxX: Float,
-        val viewBoxY: Float,
-        val viewBoxWidth: Float,
-        val viewBoxHeight: Float,
+        val bitmap: Bitmap,
     )
+
+    private var cachedSegmentIndex = -1
+    private var cachedWebFrames: List<WebMaskArchive.Frame> = emptyList()
+    private var cachedMobFrames: List<WebMaskArchive.MobFrame> = emptyList()
+    private var cachedFrameIndex = -1
+    private var cachedFrame: Frame? = null
+
+    val segmentCount: Int get() = archive.segments.size
+
+    @Synchronized
+    fun frameAt(positionMs: Long): Frame? {
+        val segmentIndex = archive.segmentIndexAt(positionMs)
+        if (segmentIndex < 0) return null
+        if (segmentIndex != cachedSegmentIndex) {
+            cachedSegmentIndex = segmentIndex
+            cachedFrameIndex = -1
+            cachedFrame = null
+            runCatching {
+                if (type == Type.Web) {
+                    cachedWebFrames = archive.readFrames(segmentIndex)
+                    cachedMobFrames = emptyList()
+                } else {
+                    cachedMobFrames = archive.readMobFrames(segmentIndex)
+                    cachedWebFrames = emptyList()
+                }
+            }.onFailure { error ->
+                cachedWebFrames = emptyList()
+                cachedMobFrames = emptyList()
+                Logger.w(
+                    "DanmakuMask",
+                    "Invalid ${type.name.lowercase()}mask segment=$segmentIndex: ${error.message}",
+                )
+            }
+        }
+
+        val firstFrameIndex = if (type == Type.Web) {
+            cachedWebFrames.indexOfFirst { positionMs < it.timeMs }
+        } else {
+            cachedMobFrames.indexOfFirst { positionMs < it.timeMs }
+        }
+        val segmentEnd = archive.segments.getOrNull(segmentIndex + 1)?.startMs
+        val frameIndex = if (firstFrameIndex >= 0) {
+            firstFrameIndex
+        } else if (segmentEnd != null && positionMs < segmentEnd) {
+            if (type == Type.Web) cachedWebFrames.lastIndex else cachedMobFrames.lastIndex
+        } else {
+            -1
+        }
+        if (frameIndex < 0) return null
+        if (frameIndex == cachedFrameIndex) return cachedFrame
+
+        val segmentStart = archive.segments[segmentIndex].startMs
+        val startTime = if (type == Type.Web) {
+            cachedWebFrames.getOrNull(frameIndex - 1)?.timeMs ?: segmentStart
+        } else {
+            cachedMobFrames.getOrNull(frameIndex - 1)?.timeMs ?: segmentStart
+        }
+        val recordEnd = if (type == Type.Web) {
+            cachedWebFrames[frameIndex].timeMs
+        } else {
+            cachedMobFrames[frameIndex].timeMs
+        }
+        val endTime = maxOf(
+            recordEnd,
+            segmentEnd ?: recordEnd,
+        ).coerceAtLeast(startTime + 1L)
+        val bitmap = runCatching {
+            if (type == Type.Web) {
+                renderSvg(decodeSvg(cachedWebFrames[frameIndex].dataUri))
+            } else {
+                renderMob(cachedMobFrames[frameIndex])
+            }
+        }.onFailure { error ->
+            Logger.w("DanmakuMask", "Mask frame decode failed type=${type.name}: ${error.message}")
+        }.getOrNull() ?: return null
+
+        cachedFrameIndex = frameIndex
+        return Frame(startTime, endTime, bitmap).also { cachedFrame = it }
+    }
+
+    private fun decodeSvg(dataUri: String): String {
+        val encoded = dataUri.substringAfter(',', missingDelimiterValue = dataUri)
+            .replace("\n", "")
+            .replace("\r", "")
+        return Base64.getDecoder().decode(encoded).toString(Charsets.UTF_8)
+    }
+
+    private fun renderSvg(svgText: String): Bitmap {
+        val svg = SVG.getFromString(svgText)
+        val viewBox = VIEW_BOX.find(svgText)?.groupValues?.get(1)?.trim()?.split(Regex("[ ,]+"))
+        val fallbackWidth = viewBox?.getOrNull(2)?.toFloatOrNull() ?: 1920f
+        val fallbackHeight = viewBox?.getOrNull(3)?.toFloatOrNull() ?: 1080f
+        val width = svg.documentWidth.takeIf { it.isFinite() && it > 0f } ?: fallbackWidth
+        val height = svg.documentHeight.takeIf { it.isFinite() && it > 0f } ?: fallbackHeight
+        val bitmap = Bitmap.createBitmap(width.roundToInt().coerceIn(1, 4096), height.roundToInt().coerceIn(1, 4096), Bitmap.Config.ARGB_8888)
+        if (svg.documentWidth <= 0f) svg.setDocumentWidth(bitmap.width.toFloat())
+        if (svg.documentHeight <= 0f) svg.setDocumentHeight(bitmap.height.toFloat())
+        svg.renderToCanvas(Canvas(bitmap))
+        return bitmap
+    }
+
+    private fun renderMob(frame: WebMaskArchive.MobFrame): Bitmap {
+        val bitmap = Bitmap.createBitmap(frame.width, frame.height, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(frame.width * frame.height) { index ->
+            val byteIndex = index / 8
+            val bitOffset = 7 - (index % 8)
+            if ((frame.image[byteIndex].toInt() ushr bitOffset and 1) == 0) {
+                Color.BLACK
+            } else {
+                Color.TRANSPARENT
+            }
+        }
+        bitmap.setPixels(pixels, 0, frame.width, 0, 0, frame.width, frame.height)
+        return bitmap
+    }
+
+    companion object {
+        fun fromBinary(binary: ByteArray, maskUrl: String = ""): DanmakuMask? = runCatching {
+            val normalized = maskUrl.lowercase()
+            val type = if (normalized.contains("mobmask")) Type.Mob else Type.Web
+            DanmakuMask(WebMaskArchive.parse(binary), type)
+        }.getOrNull()
+
+        private val VIEW_BOX = Regex("\\bviewBox\\s*=\\s*[\\\"']([^\\\"']+)", RegexOption.IGNORE_CASE)
+    }
 }
 
-/** Host that clips only the danmaku child, keeping the video and controls untouched. */
+/** Host that applies the mask only to the danmaku child. */
 internal class DanmakuMaskHostView(context: Context) : FrameLayout(context) {
     val danmakuView = DanmakuView(context)
     var frame: DanmakuMask.Frame? = null
+        set(value) {
+            field = value
+            invalidate()
+        }
     var maskEnabled: Boolean = false
+        set(value) {
+            field = value
+            invalidate()
+        }
     var videoAspectRatio: Float = 16f / 9f
-    private val mergedPath = Path()
-    private var cachedFrame: DanmakuMask.Frame? = null
-    private var cachedWidth = 0
-    private var cachedHeight = 0
-    private var cachedAspect = 0f
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    private val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+        isFilterBitmap = true
+    }
 
     init {
         addView(danmakuView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -123,62 +189,29 @@ internal class DanmakuMaskHostView(context: Context) : FrameLayout(context) {
     }
 
     override fun dispatchDraw(canvas: Canvas) {
-        if (!maskEnabled || width <= 0 || height <= 0) {
-            super.dispatchDraw(canvas)
-            return
-        }
         val frame = frame
-        if (frame == null || frame.paths.isEmpty()) {
-            cachedFrame = null
+        if (!maskEnabled || frame == null || width <= 0 || height <= 0) {
             super.dispatchDraw(canvas)
             return
         }
-        if (frame !== cachedFrame || cachedWidth != width || cachedHeight != height ||
-            cachedAspect != videoAspectRatio
-        ) {
-            rebuildPath(frame)
-            cachedFrame = frame
-            cachedWidth = width
-            cachedHeight = height
-            cachedAspect = videoAspectRatio
-        }
-        if (mergedPath.isEmpty) {
-            super.dispatchDraw(canvas)
-            return
-        }
-        val save = canvas.save()
-        canvas.clipPath(mergedPath)
+        val save = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
         super.dispatchDraw(canvas)
+        val destination = resolveVideoRect(width, height, videoAspectRatio)
+        canvas.drawBitmap(frame.bitmap, null, destination, maskPaint)
         canvas.restoreToCount(save)
     }
 
-    private fun rebuildPath(frame: DanmakuMask.Frame) {
-        mergedPath.reset()
-        val aspect = videoAspectRatio.takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
+    private fun resolveVideoRect(width: Int, height: Int, aspectRatio: Float): RectF {
+        val aspect = aspectRatio.takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
         val viewAspect = width.toFloat() / height.toFloat().coerceAtLeast(1f)
-        val dstWidth: Float
-        val dstHeight: Float
-        val offsetX: Float
-        val offsetY: Float
-        if (aspect > viewAspect) {
-            dstWidth = width.toFloat()
-            dstHeight = dstWidth / aspect
-            offsetX = 0f
-            offsetY = (height - dstHeight) / 2f
+        return if (aspect > viewAspect) {
+            val dstWidth = width.toFloat()
+            val dstHeight = dstWidth / aspect
+            RectF(0f, (height - dstHeight) / 2f, dstWidth, (height + dstHeight) / 2f)
         } else {
-            dstHeight = height.toFloat()
-            dstWidth = dstHeight * aspect
-            offsetX = (width - dstWidth) / 2f
-            offsetY = 0f
-        }
-        val matrix = Matrix().apply {
-            setScale(dstWidth / frame.viewBoxWidth.coerceAtLeast(1f), dstHeight / frame.viewBoxHeight.coerceAtLeast(1f))
-            postTranslate(offsetX - frame.viewBoxX * (dstWidth / frame.viewBoxWidth.coerceAtLeast(1f)), offsetY - frame.viewBoxY * (dstHeight / frame.viewBoxHeight.coerceAtLeast(1f)))
-        }
-        frame.paths.forEach { path ->
-            val transformed = Path(path)
-            transformed.transform(matrix)
-            mergedPath.addPath(transformed)
+            val dstHeight = height.toFloat()
+            val dstWidth = dstHeight * aspect
+            RectF((width - dstWidth) / 2f, 0f, (width + dstWidth) / 2f, dstHeight)
         }
     }
 }

@@ -172,14 +172,6 @@ class DetailReturnState internal constructor(
         clearDetailCommentFocusRestore()
     }
 
-    fun prepareForLivePlayerOpen(focusKey: String) {
-        prepareHomeVideoFocusRestore(
-            tab = AppTopLevelTab.LIVE,
-            focusKey = focusKey,
-        )
-        clearDetailCommentFocusRestore()
-    }
-
     private fun prepareHomeVideoFocusRestore(
         tab: AppTopLevelTab,
         focusKey: String,
@@ -318,8 +310,9 @@ class AppNavigationState internal constructor(
         detailReturnState.prepareForInternalHomeTabPlayerOpen(tab, focusKey)
     }
 
-    fun prepareForLivePlayerOpen(focusKey: String) {
-        detailReturnState.prepareForLivePlayerOpen(focusKey)
+    fun prepareForLivePlayerOpen(sourceTab: AppTopLevelTab, focusKey: String) {
+        homeNavState.switchHomeTab(sourceTab.index)
+        detailReturnState.prepareForInternalHomeTabPlayerOpen(sourceTab, focusKey)
     }
 
     fun clearDetailCommentFocusRestore() {

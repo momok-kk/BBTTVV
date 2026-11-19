@@ -24,6 +24,10 @@ internal object ApiClientProvider {
         NetworkHttpClients.buildPlaybackOkHttpClient(okHttpClient)
     }
 
+    val liveDanmakuOkHttpClient: OkHttpClient by lazy {
+        NetworkHttpClients.buildLiveDanmakuOkHttpClient(okHttpClient)
+    }
+
     val guestOkHttpClient: OkHttpClient by lazy {
         NetworkHttpClients.buildGuestOkHttpClient(appContext = { NetworkModule.appContext })
     }

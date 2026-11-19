@@ -11,6 +11,14 @@ internal fun shouldAcceptLiveDanmaku(
     return isEnabled && isPlaying && !isAppInBackground && !isPlaybackSuppressed
 }
 
+internal fun shouldCollectLiveDanmaku(
+    isEnabled: Boolean,
+    isAppInBackground: Boolean,
+    isPlaybackSuppressed: Boolean,
+): Boolean {
+    return isEnabled && !isAppInBackground && !isPlaybackSuppressed
+}
+
 internal fun resolveLiveDanmakuShowAtMs(
     currentPositionMs: Long,
     lastShowAtMs: Long,

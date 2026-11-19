@@ -60,7 +60,7 @@ internal fun HomeScreen(
     onVideoFocusRestored: (String) -> Unit = {},
     onCancelVideoFocusRestore: () -> Unit = {},
     onVideoClick: (VideoItem) -> Unit,
-    onLiveClick: (Long, String?) -> Unit,
+    onLiveClick: (AppTopLevelTab, Long, String) -> Unit,
     onTabSelected: (AppTopLevelTab) -> Unit,
     onRecommendVideoClick: (String, VideoItem) -> Unit = { _, video -> onVideoClick(video) },
     onSearchVideoClick: (String, VideoItem) -> Unit = { _, video -> onVideoClick(video) },
@@ -107,6 +107,9 @@ internal fun HomeScreen(
     val isVideoFocusRestorePending = selectedHomeTab == restoreTargetTab &&
         hasPendingVideoFocusRestore &&
         restoreVideoFocusKey != null
+    val restoreDynamicLiveRoomId = restoreVideoFocusKey
+        ?.takeIf { isVideoFocusRestorePending && restoreTargetTab == AppTopLevelTab.DYNAMIC }
+        ?.let(DynamicLiveFocusKey::roomId)
     LaunchedEffect(homeTabs) {
         tabResidencyState.updateVisibleTabs(homeTabs)
     }
@@ -141,13 +144,14 @@ internal fun HomeScreen(
     val restoreRecommendVideoIndex = restoreVideoFocusKey?.let { focusKey ->
         recommendVideoItems.indexOfFirst { it.key == focusKey }.takeIf { it >= 0 }
     } ?: -1
-    val shouldResumeVideoContentFocus = HomeFocusStrategy.shouldRestoreBackReturnVideoFocus(
-        scene = effectiveFocusScene,
-        selectedHomeTab = selectedHomeTab,
-        restoreVideoFocusTab = restoreTargetTab,
-        restoreVideoFocusKey = restoreVideoFocusKey,
-        restoreVideoIndex = restoreRecommendVideoIndex,
-    )
+    val shouldResumeVideoContentFocus = restoreDynamicLiveRoomId == null &&
+        HomeFocusStrategy.shouldRestoreBackReturnVideoFocus(
+            scene = effectiveFocusScene,
+            selectedHomeTab = selectedHomeTab,
+            restoreVideoFocusTab = restoreTargetTab,
+            restoreVideoFocusKey = restoreVideoFocusKey,
+            restoreVideoIndex = restoreRecommendVideoIndex,
+        )
     val restoreRecommendInitialScrollIndex = if (
         shouldResumeVideoContentFocus &&
         restoreTargetTab == AppTopLevelTab.RECOMMEND
@@ -211,8 +215,10 @@ internal fun HomeScreen(
         effectiveFocusScene,
         restoreVideoFocusKey,
         restoreTargetTab,
-        restoreRecommendVideoIndex
+        restoreRecommendVideoIndex,
+        restoreDynamicLiveRoomId,
     ) {
+        if (restoreDynamicLiveRoomId != null) return@LaunchedEffect
         val focusKey = restoreVideoFocusKey
         if (
             !HomeFocusStrategy.shouldRestoreBackReturnVideoFocus(
@@ -272,12 +278,13 @@ internal fun HomeScreen(
         return focusCoordinator.handleContentWantsTopBar(scene)
     }
 
-    BackHandler(enabled = !focusCoordinator.isContentFocused && selectedHomeTab != AppTopLevelTab.RECOMMEND) {
+    val isInHomeContent = focusCoordinator.isContentFocused || restoreDynamicLiveRoomId != null
+    BackHandler(enabled = !isInHomeContent && selectedHomeTab != AppTopLevelTab.RECOMMEND) {
         selectHomeTab(AppTopLevelTab.RECOMMEND, HomeFocusScene.BackToRecommend)
         requestTopBarFromContent(HomeFocusScene.BackToRecommend)
     }
 
-    BackHandler(enabled = focusCoordinator.isContentFocused) {
+    BackHandler(enabled = isInHomeContent) {
         requestTopBarFromContent(HomeFocusScene.BackToTopBar)
     }
 
@@ -350,6 +357,10 @@ internal fun HomeScreen(
         ) {
             HomeContentDispatcher(
                 selectedHomeTab = selectedHomeTab,
+                restoreDynamicLiveRoomId = restoreDynamicLiveRoomId,
+                onDynamicLiveFocusRestored = { roomId ->
+                    onVideoFocusRestored(DynamicLiveFocusKey.forRoom(roomId))
+                },
                 visibleHomeTabs = homeTabs,
                 recommendVideoItems = recommendVideoItems,
                 viewModel = viewModel,

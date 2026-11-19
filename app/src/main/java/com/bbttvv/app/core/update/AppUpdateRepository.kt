@@ -8,17 +8,19 @@ import java.io.File
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.security.MessageDigest
+import java.util.Properties
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import okhttp3.Request
 import okhttp3.OkHttpClient
 
-private const val GITHUB_LATEST_RELEASE_URL =
-    "https://api.github.com/repos/609293964/BBTTVV/releases/latest"
+private const val GITHUB_VERSION_PROPERTIES_URL =
+    "https://raw.githubusercontent.com/momok-kk/BBTTVV/main/version.properties"
+private const val GITHUB_LATEST_DOWNLOAD_URL =
+    "https://github.com/momok-kk/BBTTVV/releases/latest/download"
 private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
 
 /** A GitHub release that has a compatible APK attached. */
@@ -31,6 +33,7 @@ data class AvailableAppUpdate(
 
 sealed interface AppUpdateCheckResult {
     data object NoCompatibleApk : AppUpdateCheckResult
+    data object UpToDate : AppUpdateCheckResult
     data class UpdateAvailable(val update: AvailableAppUpdate) : AppUpdateCheckResult
 }
 
@@ -42,37 +45,38 @@ sealed interface AppUpdateDownloadResult {
 /**
  * Reads public GitHub Releases and validates an APK before passing it to Android's installer.
  *
- * The release asset's digest is an integrity check. The package name, versionCode and signing
- * certificate checks below are the upgrade-security boundary; a release title or asset filename
- * is never trusted as a version identifier.
+ * The package name, versionCode and signing certificate checks below are the upgrade-security
+ * boundary. A release title or asset filename is never trusted as a version identifier.
  */
 class AppUpdateRepository(
     private val appContext: Context,
     private val httpClient: OkHttpClient = updateHttpClient,
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
-
     suspend fun checkLatest(): AppUpdateCheckResult = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
-            .url(GITHUB_LATEST_RELEASE_URL)
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "BBTTVV-update-checker")
-            .build()
-        val release = httpClient.newCall(request).execute().use { response ->
+        val publishedVersion = httpClient.newCall(
+            Request.Builder()
+                .url(GITHUB_VERSION_PROPERTIES_URL)
+                .header("User-Agent", "BBTTVV-update-checker")
+                .build()
+        ).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException(resolveGithubHttpError(response.code, response.body?.string()))
+                throw IllegalStateException(resolveGithubHttpError(response.code, response.body.string()))
             }
-            val body = response.body?.string() ?: error("GitHub 返回为空")
-            json.decodeFromString(GithubRelease.serializer(), body)
+            val body = response.body.string()
+            parsePublishedVersionProperties(body)
         }
-        val asset = selectCompatibleApk(release.assets, Build.SUPPORTED_ABIS)
+        val currentVersion = appContext.packageManager.getPackageInfo(appContext.packageName, 0)
+        if (publishedVersion.versionCode <= packageVersionCode(currentVersion)) {
+            return@withContext AppUpdateCheckResult.UpToDate
+        }
+        val abi = Build.SUPPORTED_ABIS.firstOrNull { it == "arm64-v8a" || it == "armeabi-v7a" }
             ?: return@withContext AppUpdateCheckResult.NoCompatibleApk
         AppUpdateCheckResult.UpdateAvailable(
             AvailableAppUpdate(
-                versionName = asset.name.removeSuffix(".apk").removePrefix("BBTTVV-"),
-                releaseNotes = release.body.orEmpty().trim(),
-                downloadUrl = asset.downloadUrl,
-                sha256 = asset.digest?.removePrefix("sha256:")?.takeIf { it.length == 64 },
+                versionName = publishedVersion.versionName,
+                releaseNotes = "",
+                downloadUrl = "$GITHUB_LATEST_DOWNLOAD_URL/BBTTVV-${publishedVersion.versionName}-$abi.apk",
+                sha256 = null,
             )
         )
     }
@@ -96,7 +100,7 @@ class AppUpdateRepository(
                             "下载失败（${response.code}）"
                         )
                     }
-                    val body = response.body ?: return@withContext AppUpdateDownloadResult.Rejected("更新包为空")
+                    val body = response.body
                     body.byteStream().use { input ->
                         temporary.outputStream().buffered().use { output -> input.copyTo(output) }
                     }
@@ -154,6 +158,21 @@ private val updateHttpClient: OkHttpClient = OkHttpClient.Builder()
     .followSslRedirects(true)
     .build()
 
+internal data class PublishedVersion(
+    val versionCode: Long,
+    val versionName: String,
+)
+
+internal fun parsePublishedVersionProperties(body: String): PublishedVersion {
+    val properties = Properties().apply { load(body.byteInputStream()) }
+    val versionCode = properties.getProperty("versionCode")?.trim()?.toLongOrNull()
+        ?: error("GitHub 版本清单缺少有效的 versionCode")
+    val versionName = properties.getProperty("versionName")?.trim()
+        ?.takeIf { it.matches(Regex("\\d+\\.\\d+")) }
+        ?: error("GitHub 版本清单缺少有效的 versionName")
+    return PublishedVersion(versionCode = versionCode, versionName = versionName)
+}
+
 private fun resolveGithubHttpError(statusCode: Int, body: String?): String {
     val message = body
         ?.substringAfter("\"message\":\"")
@@ -166,7 +185,7 @@ private fun resolveGithubHttpError(statusCode: Int, body: String?): String {
 }
 
 internal fun resolveUpdateNetworkError(error: Exception): String = when (error) {
-    is java.net.UnknownHostException -> "无法解析 api.github.com，请检查电视的网络或 DNS 设置"
+    is java.net.UnknownHostException -> "无法解析 GitHub 更新服务器，请检查电视的网络或 DNS 设置"
     is SocketTimeoutException -> "连接 GitHub 超时，请检查电视网络后重试"
     is IOException -> "连接 GitHub 失败：${error.message ?: error.javaClass.simpleName}"
     else -> error.message ?: "检查更新失败"
@@ -204,12 +223,6 @@ private fun sha256(file: File): String = file.inputStream().buffered().use { inp
 
 private fun sha256(bytes: ByteArray): String =
     MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { byte -> "%02x".format(byte) }
-
-@Serializable
-private data class GithubRelease(
-    val body: String? = null,
-    val assets: List<GithubReleaseAsset> = emptyList(),
-)
 
 @Serializable
 internal data class GithubReleaseAsset(

@@ -209,7 +209,7 @@ object LiveRepository {
             }
             
             val qualityList = legacyResp?.data?.quality_description ?: emptyList()
-            val currentQuality = legacyResp?.data?.current_quality ?: 0
+            val currentQuality = legacyResp?.data?.currentQn ?: 0
             val legacyHasUrl = legacyResp?.data?.durl?.firstOrNull()?.url != null
             com.bbttvv.app.core.util.Logger.d("LiveRepo", " Legacy API: qualityList=${qualityList.map { it.desc }}, current=$currentQuality, hasUrl=$legacyHasUrl")
             
@@ -228,7 +228,6 @@ object LiveRepository {
                 // 合并旧版画质列表到新版响应数据
                 val mergedData = resp.data.copy(
                     quality_description = qualityList.takeIf { it.isNotEmpty() } ?: resp.data.quality_description,
-                    current_quality = if (currentQuality > 0) currentQuality else resp.data.current_quality
                 )
                 com.bbttvv.app.core.util.Logger.d("LiveRepo", " Merged data: qualityList=${mergedData.quality_description?.map { it.desc }}")
                 Result.success(mergedData)

@@ -10,7 +10,6 @@ import com.bbttvv.app.core.network.NetworkModule
 import com.bbttvv.app.core.network.socket.LiveDanmakuClient
 import com.bbttvv.app.core.network.socket.LiveDanmakuConnectionState
 import com.bbttvv.app.core.player.BasePlayerViewModel
-import com.bbttvv.app.core.player.resolvePlayWhenReadyForAppVisibility
 import com.bbttvv.app.core.player.PlayerAudioBalanceController
 import com.bbttvv.app.core.store.SettingsManager
 import com.bbttvv.app.core.util.CrashReporter
@@ -138,6 +137,7 @@ data class LivePlayerPlaybackState(
     val isBuffering: Boolean = false,
     val playerState: Int = Player.STATE_IDLE,
     val positionMs: Long = 0L,
+    val danmakuPositionMs: Long = 0L,
 ) {
     val isPlaybackActive: Boolean
         get() = playWhenReady && playerState != Player.STATE_IDLE && playerState != Player.STATE_ENDED
@@ -154,6 +154,10 @@ data class LivePlayerUiState(
     val qualityOptions: List<LiveQualityOption> = emptyList(),
     val selectedQuality: Int = 0,
     val selectedQualityLabel: String = "",
+    val videoEnhancementMaxQn: Int = DEFAULT_LIVE_ENHANCEMENT_MAX_QN,
+    val videoEnhancementEnabled: Boolean = false,
+    val videoEnhancementFailed: Boolean = false,
+    val streamHasDrm: Boolean = false,
     val lineOptions: List<LiveLineOption> = emptyList(),
     val selectedLineKey: String = "",
     val selectedLineLabel: String = "",
@@ -171,7 +175,15 @@ data class LivePlayerUiState(
     val errorMessage: String? = null,
     val statusMessage: String? = null,
     val streamUrl: String = "",
-)
+) {
+    val canEnhanceVideo: Boolean
+        get() = !videoEnhancementFailed && !streamHasDrm &&
+            liveQualityQn(selectedQuality) in 1..videoEnhancementMaxQn &&
+            liveQualityHdrType(selectedQuality) == 0 && liveQualityEotf(selectedQuality) == 0
+
+    val applyVideoEnhancement: Boolean
+        get() = videoEnhancementEnabled && canEnhanceVideo
+}
 
 private data class LiveStreamLoadResult(
     val streamUrl: String,
@@ -206,6 +218,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
     internal val superChat: StateFlow<LiveSuperChat?> = _superChat.asStateFlow()
 
     private var runtimeState = LivePlaybackRuntimeState()
+    private var playerUsesVideoEnhancement = false
     private var liveLoadJob: Job? = null
     private var playerPollingJob: Job? = null
     private var isAppInBackground: Boolean = false
@@ -219,6 +232,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
     private var liveDanmakuClient: LiveDanmakuClient? = null
     private var liveDanmakuSessionId: Long = 0L
     private var liveDanmakuRoomId: Long = 0L
+    private var liveDanmakuTimelineStartMs: Long? = null
     private val liveDanmakuBuffer = ArrayDeque<WeightedTextData>()
     private var lastLiveDanmakuShowAtMs: Long = 0L
     private var liveDanmakuSequenceId: Long = 1L
@@ -262,6 +276,11 @@ class LivePlayerViewModel : BasePlayerViewModel() {
         override fun onPlayerError(error: PlaybackException) {
             ensureMainThread("LivePlayer.Listener.onPlayerError")
             val roomId = _uiState.value.realRoomId.takeIf { it > 0L } ?: runtimeState.roomId
+            if (playerUsesVideoEnhancement && _uiState.value.applyVideoEnhancement) {
+                _uiState.update { it.copy(videoEnhancementFailed = true, videoEnhancementEnabled = false) }
+                postStatus("画质增强无法使用，已恢复普通播放")
+                return
+            }
             CrashReporter.markLivePlaybackStage("player_error")
             if (!isAppInBackground && tryRecoverBehindLiveWindow(error)) return
             if (
@@ -286,6 +305,13 @@ class LivePlayerViewModel : BasePlayerViewModel() {
                 )
             }
         }
+    }
+
+    @MainThread
+    internal fun attachLivePlayer(player: ExoPlayer, usesVideoEnhancement: Boolean) {
+        playerUsesVideoEnhancement = usesVideoEnhancement
+        attachPlayer(player)
+        playCurrentStream()
     }
 
     @MainThread
@@ -542,6 +568,10 @@ class LivePlayerViewModel : BasePlayerViewModel() {
                     qualityOptions = stream.qualityOptions,
                     selectedQuality = stream.selectedQuality,
                     selectedQualityLabel = stream.selectedQualityLabel,
+                    videoEnhancementMaxQn = detail?.videoEnhancement?.let { config ->
+                        if (config.enabled) config.highestQuality.coerceAtLeast(0) else 0
+                    } ?: DEFAULT_LIVE_ENHANCEMENT_MAX_QN,
+                    streamHasDrm = stream.selectedCandidate.drm,
                     lineOptions = stream.lineOptions,
                     selectedLineKey = stream.selectedLineKey,
                     selectedLineLabel = stream.selectedLineLabel,
@@ -570,15 +600,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
                 runtimeState = runtimeState.copy(sessionStarted = true)
             }
             CrashReporter.markLivePlaybackStage("source_ready")
-            playStreamingUrl(
-                url = stream.streamUrl,
-                referer = "https://live.bilibili.com/$resolvedRoomId",
-                resetPlayer = true,
-                playWhenReady = resolvePlayWhenReadyForAppVisibility(
-                    requestedPlayWhenReady = true,
-                    isPlaybackSuppressed = isPlaybackSuppressed(),
-                )
-            )
+            playCurrentStream()
             refreshPlaybackState()
             if (isDanmakuEnabled.value && !isAppInBackground) {
                 connectLiveDanmakuIfNeeded(resolvedRoomId)
@@ -628,6 +650,24 @@ class LivePlayerViewModel : BasePlayerViewModel() {
                 statusMessage = "清晰度：${stream.selectedQualityLabel}"
             )
         }
+    }
+
+    @MainThread
+    internal fun toggleVideoEnhancement() {
+        ensureMainThread("toggleVideoEnhancement")
+        val state = _uiState.value
+        if (state.isLoading || state.streamUrl.isBlank() || state.videoEnhancementFailed ||
+            state.videoEnhancementMaxQn <= 0
+        ) return
+        val enabled = !state.videoEnhancementEnabled
+        _uiState.update { it.copy(videoEnhancementEnabled = enabled) }
+        postStatus(
+            when {
+                !enabled -> "画质增强已关闭"
+                state.canEnhanceVideo -> "画质增强已开启"
+                else -> "画质增强已开启，当前档位不适用"
+            }
+        )
     }
 
     @MainThread
@@ -812,7 +852,8 @@ class LivePlayerViewModel : BasePlayerViewModel() {
                 playWhenReady = player.playWhenReady,
                 isBuffering = player.playbackState == Player.STATE_BUFFERING,
                 playerState = player.playbackState,
-                positionMs = player.currentPosition.coerceAtLeast(0L)
+                positionMs = player.currentPosition.coerceAtLeast(0L),
+                danmakuPositionMs = currentLiveDanmakuPositionMs(),
             )
         }
         _playbackState.value = nextState
@@ -928,22 +969,13 @@ class LivePlayerViewModel : BasePlayerViewModel() {
             recoveryRefreshAttempted = if (resetRecoveryState) false else runtimeState.recoveryRefreshAttempted,
         )
         liveBufferingStallTracker.reset()
-        val refererRoomId = runtimeState.realRoomId.takeIf { it > 0L } ?: runtimeState.roomId
         resetLiveDanmakuBuffer(clearPayload = true)
-        playStreamingUrl(
-            url = stream.streamUrl,
-            referer = "https://live.bilibili.com/$refererRoomId",
-            resetPlayer = true,
-            playWhenReady = resolvePlayWhenReadyForAppVisibility(
-                requestedPlayWhenReady = true,
-                isPlaybackSuppressed = isPlaybackSuppressed(),
-            )
-        )
         _uiState.update {
             it.copy(
                 qualityOptions = stream.qualityOptions,
                 selectedQuality = stream.selectedQuality,
                 selectedQualityLabel = stream.selectedQualityLabel,
+                streamHasDrm = stream.selectedCandidate.drm,
                 lineOptions = stream.lineOptions,
                 selectedLineKey = stream.selectedLineKey,
                 selectedLineLabel = stream.selectedLineLabel,
@@ -957,10 +989,24 @@ class LivePlayerViewModel : BasePlayerViewModel() {
                 streamUrl = stream.streamUrl
             )
         }
+        playCurrentStream()
         refreshPlaybackState()
         if (!statusMessage.isNullOrBlank()) {
             scheduleStatusAutoClear()
         }
+    }
+
+    private fun playCurrentStream() {
+        val state = _uiState.value
+        // An effect pipeline is selected before prepare. If it changes, wait for the matching player.
+        if (exoPlayer == null || state.streamUrl.isBlank() || playerUsesVideoEnhancement != state.applyVideoEnhancement) return
+        val refererRoomId = state.realRoomId.takeIf { it > 0L } ?: runtimeState.roomId
+        playStreamingUrl(
+            url = state.streamUrl,
+            referer = "https://live.bilibili.com/$refererRoomId",
+            resetPlayer = true,
+            playWhenReady = !isPlaybackSuppressed(),
+        )
     }
 
     private fun recoverLivePlayback(
@@ -1154,6 +1200,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
         val selectedCandidate = selectStreamCandidate(
             candidates = scopeLiveVariants(candidates, selectedQuality),
             preferredLineKey = preferredLineKey,
+            preferredQualityKey = selectedQuality,
             preferHighBitrate = preferHighBitrate
         ) ?: return null
         val effectiveQuality = resolveEffectiveLiveQuality(
@@ -1229,6 +1276,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
                                     url = url,
                                     hdrType = codec.hdrType,
                                     eotf = codec.eotf,
+                                    drm = codec.drm,
                                     codecs = codec.codecs,
                                     acceptedQns = (codec.acceptQn.orEmpty() + codec.currentQn +
                                         listOfNotNull(codec.hdrQn.takeIf { codec.hdrType != 0 && it > 0 })).distinct(),
@@ -1257,7 +1305,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
                         formatLabel = "legacy",
                         codecName = "legacy",
                         codecLabel = "Legacy",
-                        currentQn = data.current_quality,
+                        currentQn = data.currentQn,
                         host = url,
                         hostLabel = "legacy",
                         url = url,
@@ -1290,11 +1338,13 @@ class LivePlayerViewModel : BasePlayerViewModel() {
     private fun selectStreamCandidate(
         candidates: List<LiveStreamCandidate>,
         preferredLineKey: String?,
+        preferredQualityKey: Int,
         preferHighBitrate: Boolean,
     ): LiveStreamCandidate? {
         return selectLiveStreamCandidate(
             candidates = candidates,
             preferredLineKey = preferredLineKey,
+            preferredQualityKey = preferredQualityKey,
             preferHighBitrate = preferHighBitrate,
             cdnPreference = resolvePlayerCdnPreference(),
         )
@@ -1304,11 +1354,16 @@ class LivePlayerViewModel : BasePlayerViewModel() {
         data: LivePlayUrlData,
         candidates: List<LiveStreamCandidate>,
     ): List<LiveQualityOption> {
-        val labels = (data.quality_description.orEmpty() + data.playurl_info?.playurl?.gQnDesc.orEmpty())
-            .associate { quality ->
-                liveQualityKey(quality.qn, quality.hdrType, quality.eotf) to
-                    (quality.hdrDesc.takeIf { quality.hdrType != 0 && it.isNotBlank() } ?: quality.desc)
-            }
+        // g_qn_desc is the live API's current quality catalog. Keep its labels first,
+        // then use the legacy catalog only for entries missing from the new response.
+        val labels = buildMap {
+            (data.playurl_info?.playurl?.gQnDesc.orEmpty() + data.quality_description.orEmpty())
+                .forEach { quality ->
+                    quality.displayLabel().takeIf(String::isNotBlank)?.let { label ->
+                        putIfAbsent(liveQualityKey(quality.qn, quality.hdrType, quality.eotf), label)
+                    }
+                }
+        }
         return buildLiveQualityOptions(candidates, labels)
     }
 
@@ -1326,6 +1381,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
         stopLiveDanmaku(clearPayload = shouldClearPayload)
         val sessionId = ++liveDanmakuSessionId
         liveDanmakuRoomId = roomId
+        liveDanmakuTimelineStartMs = SystemClock.elapsedRealtime()
         danmakuCollectJob = viewModelScope.launch {
             var collectedClient: LiveDanmakuClient? = null
             var stateJob: Job? = null
@@ -1349,7 +1405,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
                         }
                     }
                     client.messageFlow.collect { packet ->
-                        if (!isLiveDanmakuSessionActive(sessionId, roomId) || !canAcceptLiveDanmaku()) {
+                        if (!isLiveDanmakuSessionActive(sessionId, roomId) || !canCollectLiveDanmaku()) {
                             return@collect
                         }
                         val superChatEvent = withContext(Dispatchers.Default) {
@@ -1425,6 +1481,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
         ensureMainThread("stopLiveDanmaku")
         liveDanmakuSessionId += 1L
         liveDanmakuRoomId = 0L
+        liveDanmakuTimelineStartMs = null
         danmakuCollectJob?.cancel()
         danmakuCollectJob = null
         danmakuPublishJob?.cancel()
@@ -1450,7 +1507,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
 
     private fun handleLiveDanmakuMessage(message: ParsedLiveDanmakuMessage) {
         ensureMainThread("handleLiveDanmakuMessage")
-        if (!canAcceptLiveDanmaku()) return
+        if (!canCollectLiveDanmaku()) return
         val item = WeightedTextData().apply {
             text = message.text
             textColor = 0xFF000000.toInt() or (message.color and 0x00FFFFFF)
@@ -1461,7 +1518,7 @@ class LivePlayerViewModel : BasePlayerViewModel() {
             weight = 10
             pool = 0
         }
-        val currentPosition = maxOf(_playbackState.value.positionMs, getPlayerCurrentPosition())
+        val currentPosition = currentLiveDanmakuPositionMs()
         val showAtTime = resolveLiveDanmakuShowAtMs(
             currentPositionMs = currentPosition,
             lastShowAtMs = lastLiveDanmakuShowAtMs,
@@ -1520,13 +1577,17 @@ class LivePlayerViewModel : BasePlayerViewModel() {
         }
     }
 
-    private fun canAcceptLiveDanmaku(): Boolean {
-        return shouldAcceptLiveDanmaku(
+    private fun canCollectLiveDanmaku(): Boolean {
+        return shouldCollectLiveDanmaku(
             isEnabled = isDanmakuEnabled.value,
-            isPlaying = playerEngine?.isPlaying == true,
             isAppInBackground = isAppInBackground,
             isPlaybackSuppressed = isPlaybackSuppressed(),
         )
+    }
+
+    private fun currentLiveDanmakuPositionMs(): Long {
+        val startMs = liveDanmakuTimelineStartMs ?: return 0L
+        return (SystemClock.elapsedRealtime() - startMs).coerceAtLeast(0L)
     }
 
     private fun trimLiveDanmakuBuffer(nowPositionMs: Long) {
@@ -1544,15 +1605,19 @@ class LivePlayerViewModel : BasePlayerViewModel() {
         ensureMainThread("scheduleDanmakuPublish")
         if (danmakuPublishJob?.isActive == true) return
         danmakuPublishJob = viewModelScope.launch {
-            delay(120L)
-            val parsed = ParsedDanmaku(
-                standardList = liveDanmakuBuffer.toList(),
-                advancedList = emptyList()
-            )
-            publishDanmakuPayload(
-                parsed = parsed,
-                sourceLabel = LIVE_DANMAKU_SOURCE_LABEL
-            )
+            try {
+                delay(120L)
+                val parsed = ParsedDanmaku(
+                    standardList = liveDanmakuBuffer.toList(),
+                    advancedList = emptyList()
+                )
+                publishDanmakuPayload(
+                    parsed = parsed,
+                    sourceLabel = LIVE_DANMAKU_SOURCE_LABEL
+                )
+            } finally {
+                danmakuPublishJob = null
+            }
         }
     }
 

@@ -88,6 +88,8 @@ fun TabViewModelScope(
 @Composable
 internal fun HomeContentDispatcher(
     selectedHomeTab: AppTopLevelTab,
+    restoreDynamicLiveRoomId: Long?,
+    onDynamicLiveFocusRestored: (Long) -> Unit,
     visibleHomeTabs: List<AppTopLevelTab>,
     recommendVideoItems: List<HomeRecommendVideoCardItem>,
     viewModel: HomeViewModel,
@@ -103,7 +105,7 @@ internal fun HomeContentDispatcher(
     onRequestTopBarFocus: (HomeFocusScene) -> Boolean,
     onTabSelected: (AppTopLevelTab) -> Unit,
     onVideoClick: (VideoItem) -> Unit,
-    onLiveClick: (Long, String?) -> Unit,
+    onLiveClick: (AppTopLevelTab, Long, String) -> Unit,
     onRecommendVideoClick: (String, VideoItem) -> Unit,
     onSearchVideoClick: (String, VideoItem) -> Unit,
     onDynamicVideoClick: (String, VideoItem) -> Unit,
@@ -183,6 +185,8 @@ internal fun HomeContentDispatcher(
                     ) {
                         HomeTabContent(
                             tab = tab,
+                            restoreDynamicLiveRoomId = restoreDynamicLiveRoomId,
+                            onDynamicLiveFocusRestored = onDynamicLiveFocusRestored,
                             recommendVideoItems = recommendVideoItems,
                             viewModel = viewModel,
                             dynamicRefreshRequestId = dynamicRefreshRequestId,
@@ -319,6 +323,8 @@ private const val HomeTabSwitchTag = "HomeTabSwitch"
 @Composable
 private fun HomeTabContent(
     tab: AppTopLevelTab,
+    restoreDynamicLiveRoomId: Long?,
+    onDynamicLiveFocusRestored: (Long) -> Unit,
     recommendVideoItems: List<HomeRecommendVideoCardItem>,
     viewModel: HomeViewModel,
     dynamicRefreshRequestId: Int,
@@ -332,7 +338,7 @@ private fun HomeTabContent(
     onRequestTopBarFocus: (HomeFocusScene) -> Boolean,
     onTabSelected: (AppTopLevelTab) -> Unit,
     onVideoClick: (VideoItem) -> Unit,
-    onLiveClick: (Long, String?) -> Unit,
+    onLiveClick: (AppTopLevelTab, Long, String) -> Unit,
     onRecommendVideoClick: (String, VideoItem) -> Unit,
     onSearchVideoClick: (String, VideoItem) -> Unit,
     onDynamicVideoClick: (String, VideoItem) -> Unit,
@@ -400,7 +406,7 @@ private fun HomeTabContent(
 
         AppTopLevelTab.LIVE -> {
             LiveScreen(
-                onLiveClick = onLiveClick,
+                onLiveClick = { roomId, key -> onLiveClick(tab, roomId, key) },
                 onContentRowFocused = focusCoordinator::onContentRowFocused,
                 focusCoordinator = focusCoordinator,
                 videoCardRecycledViewPool = recyclerPools.videoCardPool,
@@ -417,7 +423,9 @@ private fun HomeTabContent(
                 selectedHomeTab = tab,
                 viewModel = viewModel,
                 onVideoClick = onDynamicVideoClick,
-                onLiveClick = { roomId -> onLiveClick(roomId, null) },
+                onLiveClick = { roomId -> onLiveClick(tab, roomId, DynamicLiveFocusKey.forRoom(roomId)) },
+                restoreLiveRoomId = restoreDynamicLiveRoomId,
+                onLiveFocusRestored = onDynamicLiveFocusRestored,
                 onOpenUp = onOpenUp,
                 dynamicRefreshRequestId = dynamicRefreshRequestId,
                 onContentRowFocused = focusCoordinator::onContentRowFocused,
@@ -500,6 +508,8 @@ private fun DynamicTabContent(
     viewModel: HomeViewModel,
     onVideoClick: (String, VideoItem) -> Unit,
     onLiveClick: (Long) -> Unit,
+    restoreLiveRoomId: Long?,
+    onLiveFocusRestored: (Long) -> Unit,
     onOpenUp: (Long) -> Unit,
     dynamicRefreshRequestId: Int,
     onContentRowFocused: (Int) -> Unit,
@@ -519,6 +529,8 @@ private fun DynamicTabContent(
         DynamicScreen(
             onVideoClick = onVideoClick,
             onLiveClick = onLiveClick,
+            restoreLiveRoomId = restoreLiveRoomId,
+            onLiveFocusRestored = onLiveFocusRestored,
             onOpenUp = onOpenUp,
             viewModel = dynamicViewModel,
             onContentRowFocused = onContentRowFocused,

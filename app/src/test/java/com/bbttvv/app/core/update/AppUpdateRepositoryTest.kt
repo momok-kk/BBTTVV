@@ -34,9 +34,17 @@ class AppUpdateRepositoryTest {
     }
 
     @Test
+    fun parsePublishedVersionProperties_readsVersionForUpdateManifest() {
+        assertEquals(
+            PublishedVersion(versionCode = 35, versionName = "1.33"),
+            parsePublishedVersionProperties("versionCode=35\nversionName=1.33\n"),
+        )
+    }
+
+    @Test
     fun resolveUpdateNetworkError_explainsDnsFailure() {
         assertEquals(
-            "无法解析 api.github.com，请检查电视的网络或 DNS 设置",
+            "无法解析 GitHub 更新服务器，请检查电视的网络或 DNS 设置",
             resolveUpdateNetworkError(UnknownHostException("api.github.com")),
         )
     }

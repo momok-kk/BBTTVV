@@ -68,7 +68,9 @@ class LiveDanmakuClient internal constructor(
     ) : this(
         scope = scope,
         reconnectConfigProvider = reconnectConfigProvider,
-        openWebSocket = { request, listener -> NetworkModule.okHttpClient.newWebSocket(request, listener) },
+        openWebSocket = { request, listener ->
+            NetworkModule.liveDanmakuOkHttpClient.newWebSocket(request, listener)
+        },
         wait = { delay(it) },
     )
 
@@ -99,7 +101,8 @@ class LiveDanmakuClient internal constructor(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     private val _messageFlow = MutableSharedFlow<DanmakuProtocol.Packet>(
-        replay = 0,
+        // Keep a small handoff buffer for the time between socket creation and collector startup.
+        replay = 32,
         extraBufferCapacity = 200,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
@@ -147,22 +150,23 @@ class LiveDanmakuClient internal constructor(
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             synchronized(socketLock) {
                 if (this@LiveDanmakuClient.webSocket !== webSocket) return
-                // Answer the peer's close frame even for code 1000, then restore the active room's feed.
-                val closingSocket = detachSocket()
-                closingSocket?.close(NORMAL_CLOSURE_CODE, null)
+                Log.w(tag, "WebSocket closing (code=$code, reason=$reason)")
+                // Complete the close handshake and schedule exactly one replacement socket.
+                webSocket.close(NORMAL_CLOSURE_CODE, null)
+                detachSocket()
                 scheduleReconnect()
             }
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             synchronized(socketLock) {
-                reconnectAfterLoss(webSocket, "WebSocket closed (code=$code)")
+                reconnectAfterLoss(webSocket, "WebSocket closed (code=$code, reason=$reason)")
             }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             synchronized(socketLock) {
-                reconnectAfterLoss(webSocket, "WebSocket failure (${t.javaClass.simpleName})")
+                reconnectAfterLoss(webSocket, "WebSocket failure (${t.javaClass.simpleName}: ${t.message})")
             }
         }
     }
@@ -223,7 +227,8 @@ class LiveDanmakuClient internal constructor(
             Request.Builder()
                 .url(endpoint.url)
                 .header("User-Agent", resolveAppUserAgent(NetworkModule.appContext))
-                .header("Origin", "https://live.bilibili.com")
+                .header("Referer", "https://live.bilibili.com/")
+                .header("Origin", "https://www.bilibili.com")
                 .build()
         } catch (_: IllegalArgumentException) {
             failConnection("Invalid live danmaku endpoint")
@@ -303,8 +308,13 @@ class LiveDanmakuClient internal constructor(
                 if (!isActive || connectionLifecycleGeneration != expectedLifecycle) return@launch
                 retryCount += 1
                 val endpoints = currentConfig?.endpoints.orEmpty()
-                currentEndpointIndex = (currentEndpointIndex + 1) % endpoints.size
-                forceRefresh || currentEndpointIndex == 0
+                val wrappedEndpoints = if (endpoints.isNotEmpty()) {
+                    currentEndpointIndex = (currentEndpointIndex + 1) % endpoints.size
+                    currentEndpointIndex == 0
+                } else {
+                    false
+                }
+                forceRefresh || wrappedEndpoints
             }
             val refreshed = if (shouldRefresh) refreshConnectionConfig() else null
             synchronized(socketLock) {
@@ -407,7 +417,7 @@ class LiveDanmakuClient internal constructor(
     }
 
     private companion object {
-        private const val AUTH_TIMEOUT_MS = 15_000L
+        private const val AUTH_TIMEOUT_MS = 6_000L
         private const val HEARTBEAT_INTERVAL_MS = 30_000L
         private const val BASE_RECONNECT_DELAY_MS = 1_000L
         private const val MAX_RECONNECT_DELAY_MS = 10_000L

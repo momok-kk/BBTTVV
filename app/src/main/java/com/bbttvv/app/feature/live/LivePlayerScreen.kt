@@ -95,7 +95,12 @@ fun LivePlayerScreen(
     val liveSuperChatEnabled by SettingsManager.getLiveSuperChatEnabled(context)
         .collectAsStateWithLifecycle(initialValue = true)
     val danmakuConfig = remember(storedDanmakuSettings) { storedDanmakuSettings.toEngineConfig() }
-    val exoPlayer = remember(context) { createConfiguredPlayer(context) }
+    val useVideoEnhancement = uiState.applyVideoEnhancement
+    val exoPlayer = remember(context, useVideoEnhancement) {
+        createConfiguredPlayer(context).apply {
+            if (useVideoEnhancement) setVideoEffects(listOf(LiveVideoSharpening))
+        }
+    }
     val playerReleaseGuard = remember(exoPlayer) { ExoPlayerReleaseGuard(exoPlayer) }
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
     val keyCaptureRequester = remember { FocusRequester() }
@@ -217,7 +222,13 @@ fun LivePlayerScreen(
                         panelOptions.getOrNull(selectedPanelIndex)?.let { option ->
                             activePanelKey = null
                             when (activePanel) {
-                                LiveOverlayAction.Quality -> viewModel.changeQuality(option.key.toIntOrNull() ?: return@let)
+                                LiveOverlayAction.Quality -> {
+                                    if (option.key == LIVE_VIDEO_ENHANCEMENT_OPTION_KEY) {
+                                        viewModel.toggleVideoEnhancement()
+                                    } else {
+                                        option.key.toIntOrNull()?.let(viewModel::changeQuality)
+                                    }
+                                }
                                 LiveOverlayAction.Line -> viewModel.changeLine(option.key)
                                 LiveOverlayAction.Bitrate -> viewModel.changeBitrateMode(option.key)
                                 LiveOverlayAction.AudioBalance -> viewModel.changeAudioBalance(option.key)
@@ -275,20 +286,24 @@ fun LivePlayerScreen(
         }
     }
 
-    DisposableEffect(exoPlayer, playerReleaseGuard) {
-        viewModel.attachPlayer(exoPlayer)
+    DisposableEffect(viewModel) {
         onDispose {
+            viewModel.resetTransientPlaybackTuning()
+            viewModel.finishSession(reason = "screen_dispose")
             com.bbttvv.app.core.player.VolumeBalanceController.unregisterProcessor()
+        }
+    }
+
+    DisposableEffect(exoPlayer, playerReleaseGuard) {
+        viewModel.attachLivePlayer(exoPlayer, usesVideoEnhancement = useVideoEnhancement)
+        onDispose {
             playerReleaseGuard.releaseOnce(
-                finishSession = {
-                    viewModel.resetTransientPlaybackTuning()
-                    viewModel.finishSession(reason = "screen_dispose")
-                },
                 detachOwner = { player ->
                     viewModel.detachPlayer(player)
                 },
                 detachPlayerView = {
-                    clearPlayerViewReference(latestPlayerView.value)
+                    val playerView = latestPlayerView.value
+                    if (playerView?.player === exoPlayer) playerView.player = null
                 },
             )
         }
@@ -412,7 +427,7 @@ fun LivePlayerScreen(
             payload = danmakuPayload,
             isEnabled = isDanmakuEnabled,
             isPlaying = playbackState.isPlaying,
-            playbackPositionMs = playbackState.positionMs,
+            playbackPositionMs = playbackState.danmakuPositionMs,
             playbackSpeed = 1f,
             config = danmakuConfig,
             modifier = Modifier.fillMaxSize()

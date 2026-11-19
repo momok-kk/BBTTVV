@@ -26,7 +26,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,7 +55,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.recyclerview.widget.RecyclerView
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Glow
@@ -81,11 +85,25 @@ private val LiveCardShape = RoundedCornerShape(8.dp)
 private val LiveTagShape = RoundedCornerShape(4.dp)
 private val FollowUpdateCardShape = RoundedCornerShape(8.dp)
 
+internal object DynamicLiveFocusKey {
+    private const val PREFIX = "dynamic-live:"
+
+    fun forRoom(roomId: Long): String = "$PREFIX$roomId"
+
+    fun roomId(key: String): Long? = if (key.startsWith(PREFIX)) {
+        key.substring(PREFIX.length).toLongOrNull()
+    } else {
+        null
+    }
+}
+
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 internal fun DynamicScreen(
     onVideoClick: (String, VideoItem) -> Unit,
     onLiveClick: (Long) -> Unit = {},
+    restoreLiveRoomId: Long? = null,
+    onLiveFocusRestored: (Long) -> Unit = {},
     onOpenUp: (Long) -> Unit = {},
     viewModel: DynamicViewModel,
     onContentRowFocused: (Int) -> Unit = {},
@@ -163,6 +181,34 @@ internal fun DynamicScreen(
         }
     }
 
+    val liveUserIds = remember(visibleLiveUsers) { visibleLiveUsers.map { it.roomid } }
+    val liveUserFocusRequesters = remember(liveUserIds) {
+        List(liveUserIds.size) { FocusRequester() }
+    }
+    val liveRowState = rememberLazyListState()
+    val latestOnLiveFocusRestored by rememberUpdatedState(onLiveFocusRestored)
+    val isLoadingLiveRow = displayMode.showLive && uiState.isLoadingLive
+    LaunchedEffect(restoreLiveRoomId, isHomeTabActive, liveUserIds, isLoadingLiveRow) {
+        val roomId = restoreLiveRoomId ?: return@LaunchedEffect
+        if (!isHomeTabActive) return@LaunchedEffect
+        val index = liveUserIds.indexOf(roomId)
+        if (index < 0 && isLoadingLiveRow) return@LaunchedEffect
+        // Wait for the target row (or its same-tab fallback) to attach after Home returns.
+        withFrameNanos { }
+        if (index >= 0 && liveRowState.layoutInfo.visibleItemsInfo.none { it.key == roomId }) {
+            liveRowState.scrollToItem(index)
+            withFrameNanos { }
+        }
+        focusCoordinator.prepareForContentFocus(HomeFocusScene.BackReturn)
+        val restored = index >= 0 && runCatching {
+            liveUserFocusRequesters[index].requestFocus()
+        }.getOrDefault(false)
+        if (!restored) {
+            focusCoordinator.requestSelectedContentFocus()
+        }
+        latestOnLiveFocusRestored(roomId)
+    }
+
     if (!hasAnyContent && isLoadingVisibleRows) {
         HomeEmptyFocusTarget(
             tab = AppTopLevelTab.DYNAMIC,
@@ -204,12 +250,6 @@ internal fun DynamicScreen(
         )
         val dynamicVideoItems = remember(uiState.dynamicVideos) {
             uiState.dynamicVideos.map { it.toVideoItem() }
-        }
-        val liveUserIds = remember(visibleLiveUsers) {
-            visibleLiveUsers.map { live -> live.roomid }
-        }
-        val liveUserFocusRequesters = remember(liveUserIds) {
-            List(liveUserIds.size) { FocusRequester() }
         }
         val followUpdateKeys = remember(visibleFollowUpdateItems) {
             visibleFollowUpdateItems.map { item -> item.key }
@@ -439,6 +479,7 @@ internal fun DynamicScreen(
                     DynamicHeaderRows(
                         partialNoticeMessage = partialNoticeMessage,
                         visibleLiveUsers = visibleLiveUsers,
+                        liveRowState = liveRowState,
                         visibleFollowUpdateItems = visibleFollowUpdateItems,
                         contentPadding = contentPadding,
                         liveUserFocusRequesters = liveUserFocusRequesters,
@@ -554,6 +595,7 @@ internal fun DynamicScreen(
 private fun DynamicHeaderRows(
     partialNoticeMessage: String?,
     visibleLiveUsers: List<FollowedLiveRoom>,
+    liveRowState: LazyListState,
     visibleFollowUpdateItems: List<DynamicFollowUpdateItem>,
     contentPadding: PaddingValues,
     liveUserFocusRequesters: List<FocusRequester>,
@@ -590,6 +632,7 @@ private fun DynamicHeaderRows(
 
         if (visibleLiveUsers.isNotEmpty()) {
             LazyRow(
+                state = liveRowState,
                 horizontalArrangement = Arrangement.spacedBy(24.dp),
                 contentPadding = PaddingValues(
                     start = contentPadding.calculateStartPadding(LayoutDirection.Ltr),

@@ -39,6 +39,10 @@ object NetworkModule {
         ApiClientProvider.playbackOkHttpClient
     }
 
+    val liveDanmakuOkHttpClient: OkHttpClient by lazy {
+        ApiClientProvider.liveDanmakuOkHttpClient
+    }
+
     val imageOkHttpClient: OkHttpClient by lazy {
         buildImageOkHttpClient(okHttpClient)
     }

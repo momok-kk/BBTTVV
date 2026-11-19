@@ -980,6 +980,9 @@ fun TvSettingsList(
                                             kind = TvNoticeKind.Error,
                                         )
                                     }
+                                    AppUpdateCheckResult.UpToDate -> {
+                                        tvNoticeHostState.show("当前已经是最新版本")
+                                    }
                                     is AppUpdateCheckResult.UpdateAvailable -> {
                                         availableUpdate = result.update
                                         showUpdateDialog = true

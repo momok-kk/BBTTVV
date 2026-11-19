@@ -50,11 +50,27 @@ class LivePlayerKeyPolicyTest {
     }
 
     @Test
-    fun `single shot key up is consumed to prevent one press reaching a parent`() {
+    fun `back stays in the player until the press is released`() {
+        listOf(KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE, KeyEvent.KEYCODE_BUTTON_B).forEach { keyCode ->
+            val down = decisionFor(keyCode)
+            assertTrue(down.isConsumed)
+            assertNull(down.command)
+
+            val up = resolveLivePlayerKeyDecision(KeyEvent.ACTION_UP, keyCode, repeatCount = 0)
+            assertTrue(up.isConsumed)
+            assertEquals(LivePlayerKeyCommand.Back, up.command)
+
+            val canceled = resolveLivePlayerKeyDecision(
+                KeyEvent.ACTION_UP, keyCode, repeatCount = 0, isCanceled = true,
+            )
+            assertTrue(canceled.isConsumed)
+            assertNull(canceled.command)
+        }
+    }
+
+    @Test
+    fun `single shot key up is consumed without repeating the command`() {
         listOf(
-            KeyEvent.KEYCODE_BACK,
-            KeyEvent.KEYCODE_ESCAPE,
-            KeyEvent.KEYCODE_BUTTON_B,
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
             KeyEvent.KEYCODE_MENU,

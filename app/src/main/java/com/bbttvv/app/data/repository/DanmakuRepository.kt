@@ -843,12 +843,22 @@ object DanmakuRepository {
         return hosts
             .flatMap { host ->
                 val hostName = host.host.trim()
-                if (hostName.isBlank()) emptyList()
-                else buildList {
-                    if (host.wss_port > 0) add(LiveDanmakuEndpoint("wss://$hostName:${host.wss_port}/sub"))
-                    if (host.ws_port > 0) add(LiveDanmakuEndpoint("ws://$hostName:${host.ws_port}/sub"))
-                    if (host.port > 0 && host.port != host.wss_port && host.port != host.ws_port) {
-                        add(LiveDanmakuEndpoint("ws://$hostName:${host.port}/sub"))
+                if (hostName.isBlank()) {
+                    emptyList()
+                } else {
+                    buildList {
+                        if (host.wss_port > 0) {
+                            add(buildLiveDanmakuEndpoint("wss", hostName, host.wss_port))
+                        }
+                        if (host.ws_port > 0) {
+                            add(buildLiveDanmakuEndpoint("ws", hostName, host.ws_port))
+                        }
+                        if (host.port > 0 && host.port != host.wss_port && host.port != host.ws_port) {
+                            add(buildLiveDanmakuEndpoint("ws", hostName, host.port))
+                        }
+                        if (host.wss_port <= 0 && host.ws_port <= 0 && host.port <= 0) {
+                            add(buildLiveDanmakuEndpoint("wss", hostName, 443))
+                        }
                     }
                 }
             }
@@ -856,11 +866,21 @@ object DanmakuRepository {
             .sortedBy { endpoint -> liveDanmakuEndpointPriority(endpoint.url) }
     }
 
+    private fun buildLiveDanmakuEndpoint(scheme: String, host: String, port: Int): LiveDanmakuEndpoint {
+        val defaultPort = (scheme == "wss" && port == 443) || (scheme == "ws" && port == 80)
+        val portSuffix = if (defaultPort) "" else ":$port"
+        return LiveDanmakuEndpoint("$scheme://$host$portSuffix/sub")
+    }
+
     private fun liveDanmakuEndpointPriority(url: String): Int {
+        val authority = url.substringAfter("://").substringBefore('/')
+        val host = authority.substringBefore(':')
+        val isDefaultWss = url.startsWith("wss://") && !authority.contains(':')
         return when {
-            url.startsWith("wss://") && url.contains(":443/") -> 0
-            url.startsWith("wss://") -> 1
-            else -> 2
+            host == "broadcastlv.chat.bilibili.com" -> 0
+            isDefaultWss -> 1
+            url.startsWith("wss://") -> 2
+            else -> 3
         }
     }
 

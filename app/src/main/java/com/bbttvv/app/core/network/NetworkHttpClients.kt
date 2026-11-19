@@ -150,6 +150,30 @@ internal object NetworkHttpClients {
             .build()
     }
 
+    fun buildLiveDanmakuOkHttpClient(sharedClient: OkHttpClient): OkHttpClient {
+        val builder = sharedClient.newBuilder()
+            .protocols(listOf(Protocol.HTTP_1_1))
+            .cache(null)
+            .cookieJar(CookieJar.NO_COOKIES)
+            .proxy(Proxy.NO_PROXY)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            // A WebSocket is a long-lived stream. The API client's finite read timeout
+            // must not be inherited by the live danmaku transport.
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            // Bilibili uses its own binary heartbeat. Some danmaku endpoints do not
+            // answer OkHttp WebSocket Ping frames, so leave the protocol Ping disabled.
+            .retryOnConnectionFailure(true)
+            .followRedirects(false)
+            .followSslRedirects(false)
+
+        // The API interceptor waits for account warmup and reports HTTP API failures.
+        // Neither behavior belongs on the binary danmaku WebSocket.
+        builder.interceptors().clear()
+        builder.networkInterceptors().clear()
+        return builder.build()
+    }
+
     fun buildGuestOkHttpClient(appContext: () -> Context?): OkHttpClient {
         return OkHttpClient.Builder()
             .protocols(resolveSharedNetworkProtocols())

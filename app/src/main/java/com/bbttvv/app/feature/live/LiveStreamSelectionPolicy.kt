@@ -21,23 +21,43 @@ internal data class LiveStreamCandidate(
     val eotf: Int = 0,
     val codecs: String = "",
     val acceptedQns: List<Int> = emptyList(),
+    val drm: Boolean = false,
 )
 
 internal fun selectLiveStreamCandidate(
     candidates: List<LiveStreamCandidate>,
     preferredLineKey: String?,
+    preferredQualityKey: Int = 0,
     preferHighBitrate: Boolean,
     cdnPreference: SettingsManager.PlayerCdnPreference,
 ): LiveStreamCandidate? {
-    val scopedCandidates = preferredLineKey
-        ?.takeIf { key -> candidates.any { it.lineKey == key } }
-        ?.let { key -> candidates.filter { it.lineKey == key } }
-        ?: candidates
+    val qualityScopedCandidates = prioritizeLiveQuality(candidates, preferredQualityKey)
+    val lineScopedCandidates = preferredLineKey
+        ?.let { key -> qualityScopedCandidates.filter { it.lineKey == key } }
+        .orEmpty()
+        .ifEmpty { qualityScopedCandidates }
     return rankLiveStreamCandidates(
-        candidates = scopedCandidates,
+        candidates = lineScopedCandidates,
         preferHighBitrate = preferHighBitrate,
         cdnPreference = cdnPreference,
     ).firstOrNull()
+}
+
+private fun prioritizeLiveQuality(
+    candidates: List<LiveStreamCandidate>,
+    requestedQualityKey: Int,
+): List<LiveStreamCandidate> {
+    if (requestedQualityKey <= 0) return candidates
+    val requestedQn = liveQualityQn(requestedQualityKey)
+    val requestedHdrType = liveQualityHdrType(requestedQualityKey)
+    val requestedEotf = liveQualityEotf(requestedQualityKey)
+    val matchingVariant = candidates.filter {
+        it.hdrType == requestedHdrType && it.eotf == requestedEotf
+    }
+    val exact = matchingVariant.filter { it.currentQn == requestedQn }
+    if (exact.isNotEmpty()) return exact
+    val advertised = matchingVariant.filter { requestedQn in it.acceptedQns }
+    return advertised.ifEmpty { matchingVariant.ifEmpty { candidates } }
 }
 
 internal fun selectLiveRecoveryCandidate(

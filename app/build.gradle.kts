@@ -245,6 +245,7 @@ dependencies {
 
     // Media3 ready
     implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.effect)
     implementation(libs.androidx.media3.ui)
 
     // Room ready
@@ -263,6 +264,7 @@ dependencies {
     implementation(libs.zxing.core)
     implementation(libs.androidx.profileinstaller)
     implementation(libs.danmaku.render.engine)
+    implementation(libs.androidsvg)
     baselineProfile(project(":baselineprofile"))
 
     // Extra media dependencies

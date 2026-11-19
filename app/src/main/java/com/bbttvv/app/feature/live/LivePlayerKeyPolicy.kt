@@ -28,6 +28,7 @@ internal fun resolveLivePlayerKeyDecision(event: KeyEvent): LivePlayerKeyDecisio
         action = event.action,
         keyCode = event.keyCode,
         repeatCount = event.repeatCount,
+        isCanceled = event.isCanceled,
     )
 }
 
@@ -35,7 +36,20 @@ internal fun resolveLivePlayerKeyDecision(
     action: Int,
     keyCode: Int,
     repeatCount: Int,
+    isCanceled: Boolean = false,
 ): LivePlayerKeyDecision {
+    if (isTvBackKey(keyCode)) {
+        // Keep the player on the stack until release, so Home cannot receive this Back press.
+        return when (action) {
+            KeyEvent.ACTION_DOWN -> LivePlayerKeyDecision(isConsumed = true)
+            KeyEvent.ACTION_UP -> LivePlayerKeyDecision(
+                isConsumed = true,
+                command = LivePlayerKeyCommand.Back.takeUnless { isCanceled },
+            )
+            else -> LivePlayerKeyDecision(isConsumed = false)
+        }
+    }
+
     val repeatableCommand = if (action == KeyEvent.ACTION_DOWN) {
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> LivePlayerKeyCommand.MoveLeft
@@ -52,7 +66,6 @@ internal fun resolveLivePlayerKeyDecision(
     }
 
     val singleShotCommand = when {
-        isTvBackKey(keyCode) -> LivePlayerKeyCommand.Back
         isTvConfirmKey(keyCode) -> LivePlayerKeyCommand.Confirm
         else -> when (keyCode) {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> LivePlayerKeyCommand.TogglePlayback

@@ -10,7 +10,7 @@
     </style>
 
     <color name="tv_text_on_media">#EDEDED</color>
-    <color name="ic_launcher_background">#212121</color>
+    <color name="ic_launcher_background">#071A5A</color>
     <string name="app_name">BBTTVV</string>
     <string name="tcl_shortcut_service_label">TCL 遥控器快捷键</string>
     <string name="tcl_shortcut_service_description">只响应指定遥控器快捷键以打开 BBTTVV，不读取屏幕内容。</string>

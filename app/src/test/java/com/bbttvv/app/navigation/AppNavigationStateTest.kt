@@ -113,6 +113,28 @@ class BackPressExitStateTest {
 
 class AppNavigationStateTest {
     @Test
+    fun `live player return keeps the source home tab and restores its focus key`() {
+        listOf(AppTopLevelTab.DYNAMIC, AppTopLevelTab.LIVE).forEach { source ->
+            val state = createNavigationState()
+            val focusKey = if (source == AppTopLevelTab.DYNAMIC) "dynamic-live:42" else "live-card:42"
+            val playerRoute = ScreenRoutes.LivePlayer.route
+            val homeRoute = ScreenRoutes.Home.route
+
+            state.prepareForLivePlayerOpen(source, focusKey)
+            assertNull(state.restoreVideoFocusKey(homeRoute))
+            state.onRouteChanged(playerRoute)
+            assertNull(state.restoreVideoFocusKey(playerRoute))
+            state.onRouteChanged(homeRoute)
+
+            assertEquals(source.index, state.homeTabIndex)
+            assertEquals(source, state.restoreVideoFocusTab(homeRoute))
+            assertEquals(focusKey, state.restoreVideoFocusKey(homeRoute))
+            state.markHomeVideoFocusRestored(focusKey)
+            assertNull(state.restoreVideoFocusKey(homeRoute))
+        }
+    }
+
+    @Test
     fun `pending detail return survives a reorder and clears when its source disappears`() {
         val state = createNavigationState(homeTabIndex = AppTopLevelTab.LIVE.index)
         state.prepareForHomeTabDetailOpen(AppTopLevelTab.LIVE, "video")

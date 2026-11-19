@@ -220,12 +220,8 @@ fun AppNavigation(
                         navigationState.prepareForDirectDetailOpen()
                     }
                 },
-                onLiveClick = { roomId, focusKey ->
-                    if (focusKey == null) {
-                        navigationState.prepareForDirectDetailOpen()
-                    } else {
-                        navigationState.prepareForLivePlayerOpen(focusKey)
-                    }
+                onLiveClick = { sourceTab, roomId, focusKey ->
+                    navigationState.prepareForLivePlayerOpen(sourceTab, focusKey)
                     navController.navigate(ScreenRoutes.LivePlayer.createRoute(roomId))
                 },
                 onRecommendVideoClick = { focusKey, video ->
