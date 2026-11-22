@@ -18,6 +18,8 @@ object DashManifestBuilder {
         return buildManifest(
             selectedVideo = selectedVideo,
             selectedAudio = selectedAudio,
+            videoUrls = listOf(selectedVideo.baseUrl) + selectedVideo.backupUrl.orEmpty(),
+            audioUrls = listOfNotNull(selectedAudio?.baseUrl) + selectedAudio?.backupUrl.orEmpty(),
             durationSeconds = durationSeconds,
             minBufferSeconds = minBufferSeconds.toDouble()
         )
@@ -26,12 +28,16 @@ object DashManifestBuilder {
     fun buildFromTracks(
         selectedVideo: DashVideo,
         selectedAudio: DashAudio?,
+        videoUrls: List<String>,
+        audioUrls: List<String>,
         durationMs: Long
     ): String {
         val durationSeconds = durationMs.coerceAtLeast(0L) / 1000.0
         return buildManifest(
             selectedVideo = selectedVideo,
             selectedAudio = selectedAudio,
+            videoUrls = videoUrls,
+            audioUrls = audioUrls,
             durationSeconds = durationSeconds,
             minBufferSeconds = 1.5
         )
@@ -40,38 +46,46 @@ object DashManifestBuilder {
     private fun buildManifest(
         selectedVideo: DashVideo,
         selectedAudio: DashAudio?,
+        videoUrls: List<String>,
+        audioUrls: List<String>,
         durationSeconds: Double,
         minBufferSeconds: Double
     ): String {
         return buildString {
             appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
-            appendLine("""<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"""")
+            appendLine("""<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" xmlns:dvb="urn:dvb:dash:profile:dvb-dash:2014"""")
             appendLine("""     profiles="urn:mpeg:dash:profile:isoff-on-demand:2011"""")
             appendLine("""     minBufferTime="PT${formatDecimal(minBufferSeconds)}S"""")
             appendLine("""     type="static"""")
             appendLine("""     mediaPresentationDuration="PT${formatDecimal(durationSeconds)}S">""")
             appendLine("""  <Period>""")
-            appendVideoAdaptationSet(selectedVideo)
-            selectedAudio?.let { appendAudioAdaptationSet(it) }
+            appendVideoAdaptationSet(selectedVideo, normalizeUrls(videoUrls))
+            val playableAudioUrls = normalizeUrls(audioUrls)
+            if (selectedAudio != null && playableAudioUrls.isNotEmpty()) {
+                appendAudioAdaptationSet(selectedAudio, playableAudioUrls)
+            }
             appendLine("""  </Period>""")
             appendLine("""</MPD>""")
         }
     }
 
-    private fun StringBuilder.appendVideoAdaptationSet(video: DashVideo) {
+    private fun normalizeUrls(urls: List<String>): List<String> =
+        urls.map(::preferHttpsUrl).filter { it.isNotBlank() }.distinct()
+
+    private fun StringBuilder.appendVideoAdaptationSet(video: DashVideo, urls: List<String>) {
         appendLine(
             """    <AdaptationSet mimeType="${video.mimeType.ifBlank { "video/mp4" }}" contentType="video" subsegmentAlignment="true" subsegmentStartsWithSAP="1">"""
         )
-        appendRepresentation(video = video)
+        appendRepresentation(urls = urls, video = video)
         appendLine("""    </AdaptationSet>""")
     }
 
-    private fun StringBuilder.appendAudioAdaptationSet(audio: DashAudio) {
+    private fun StringBuilder.appendAudioAdaptationSet(audio: DashAudio, urls: List<String>) {
         appendLine(
             """    <AdaptationSet mimeType="${audio.mimeType.ifBlank { "audio/mp4" }}" contentType="audio" subsegmentAlignment="true" subsegmentStartsWithSAP="1">"""
         )
         appendAudioChannelConfiguration(audio)
-        appendRepresentation(audio = audio)
+        appendRepresentation(urls = urls, audio = audio)
         appendLine("""    </AdaptationSet>""")
     }
 
@@ -94,6 +108,7 @@ object DashManifestBuilder {
     }
 
     private fun StringBuilder.appendRepresentation(
+        urls: List<String>,
         video: DashVideo? = null,
         audio: DashAudio? = null
     ) {
@@ -103,12 +118,6 @@ object DashManifestBuilder {
         val width = video?.width
         val height = video?.height
         val frameRate = video?.frameRate.orEmpty()
-        val urls = buildList {
-            video?.baseUrl?.takeIf { it.isNotBlank() }?.let(::add)
-            audio?.baseUrl?.takeIf { it.isNotBlank() }?.let(::add)
-            video?.backupUrl?.filterTo(this) { it.isNotBlank() }
-            audio?.backupUrl?.filterTo(this) { it.isNotBlank() }
-        }.map(::preferHttpsUrl).distinct()
         val segmentBase = video?.segmentBase ?: audio?.segmentBase
 
         append("""      <Representation id="$streamId" codecs="${escapeXml(codecs)}" bandwidth="$bandwidth"""")
@@ -120,8 +129,11 @@ object DashManifestBuilder {
         }
         appendLine(""">""")
 
-        urls.forEach { url ->
-            appendLine("""        <BaseURL>${escapeXml(url)}</BaseURL>""")
+        // Media3 shares its priority exclusion list across audio and video.
+        val firstPriority = if (video != null) 1 else 2
+        urls.forEachIndexed { index, url ->
+            val priority = firstPriority + index * 2
+            appendLine("""        <BaseURL dvb:priority="$priority">${escapeXml(url)}</BaseURL>""")
         }
 
         segmentBase?.let { appendSegmentBase(it) }

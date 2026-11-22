@@ -917,6 +917,8 @@ class PlayerViewModel : BasePlayerViewModel() {
             val manifestContent = com.bbttvv.app.core.util.DashManifestBuilder.buildFromTracks(
                 selectedVideo = source.selectedDashVideo,
                 selectedAudio = source.selectedDashAudio,
+                videoUrls = listOf(source.videoUrl) + source.videoUrlCandidates,
+                audioUrls = listOfNotNull(source.audioUrl) + source.audioUrlCandidates,
                 durationMs = source.durationMs
             )
             val played = playDashManifestVideo(
