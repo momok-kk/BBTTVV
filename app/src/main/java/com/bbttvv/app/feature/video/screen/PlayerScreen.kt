@@ -1,7 +1,6 @@
 package com.bbttvv.app.feature.video.screen
 
 import android.view.KeyEvent
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -175,12 +174,6 @@ fun PlayerScreen(
         mutableStateOf<DanmakuVoteKeyHandler?>(null)
     }
     val danmakuVoteKeyReleaseGuard = remember { PlayerModalKeyReleaseGuard() }
-    BackHandler(enabled = isDanmakuVoteFocusDomain) {
-        viewModel.hideDanmakuVote()
-    }
-    BackHandler(enabled = !isDanmakuVoteFocusDomain && isInteractiveFocusDomain) {
-        viewModel.hideInteractiveOptions()
-    }
     var previousExclusiveOverlayOwner by remember {
         mutableStateOf<PlayerExclusiveOverlayOwner?>(null)
     }
@@ -329,7 +322,7 @@ fun PlayerScreen(
         onDebugSnapshotChange = { debugSnapshot = it },
         args = PlayerScreenEffectArgs(
             session = session,
-            voteOwnsFocus = isDanmakuVoteFocusDomain,
+            exclusiveOverlayOwner = exclusiveOverlayOwner,
             uiState = uiState,
             overlayUiState = overlayUiState,
             panelOptions = panelOptions,
@@ -372,6 +365,7 @@ fun PlayerScreen(
         PlayerSurfaceSection(
             exoPlayer = exoPlayer,
             overlayMode = overlayUiState.overlayMode,
+            canRequestSurfaceFocus = exclusiveOverlayOwner == null && uiState.resumePrompt == null,
             handlePlayerKey = handlePlayerKey,
             playerFocusCoordinator = playerFocusCoordinator,
             onViewAvailable = { playerViewRef = it },
@@ -477,6 +471,7 @@ fun PlayerScreen(
 private fun PlayerSurfaceSection(
     exoPlayer: ExoPlayer,
     overlayMode: PlayerOverlayMode,
+    canRequestSurfaceFocus: Boolean,
     handlePlayerKey: (KeyEvent) -> Boolean,
     playerFocusCoordinator: PlayerFocusCoordinator,
     onViewAvailable: (PlayerView) -> Unit,
@@ -489,7 +484,9 @@ private fun PlayerSurfaceSection(
         onViewAvailable = onViewAvailable,
         onViewReleased = onViewReleased,
         onPlayerSurfaceFocusNeeded = {
-            playerFocusCoordinator.requestFocus(PlayerFocusIntent.FocusPlayerSurface)
+            if (canRequestSurfaceFocus) {
+                playerFocusCoordinator.requestFocus(PlayerFocusIntent.FocusPlayerSurface)
+            }
         },
     )
 }

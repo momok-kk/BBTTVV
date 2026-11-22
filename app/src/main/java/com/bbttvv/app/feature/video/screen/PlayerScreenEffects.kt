@@ -59,7 +59,7 @@ internal data class PlayerScreenSession(
 
 internal data class PlayerScreenEffectArgs(
     val session: PlayerScreenSession,
-    val voteOwnsFocus: Boolean,
+    val exclusiveOverlayOwner: PlayerExclusiveOverlayOwner?,
     val uiState: PlayerUiState,
     val overlayUiState: PlayerOverlayUiState,
     val panelOptions: List<PanelOption>,
@@ -114,6 +114,8 @@ internal fun PlayerScreenEffectHost(
     BackHandler {
         when {
             args.uiState.resumePrompt != null -> viewModel.dismissResumePlaybackPrompt()
+            args.exclusiveOverlayOwner == PlayerExclusiveOverlayOwner.DanmakuVote -> viewModel.hideDanmakuVote()
+            args.exclusiveOverlayOwner == PlayerExclusiveOverlayOwner.InteractiveVideo -> viewModel.hideInteractiveOptions()
             args.uiState.autoNextPrompt != null -> viewModel.cancelAutoNextPrompt()
             args.showSponsorSkipNotice -> viewModel.dismissSponsorNotice()
             args.isCommentsPanelVisible && isViewingCommentThread -> viewModel.closeCommentThread()
@@ -315,8 +317,8 @@ internal fun PlayerScreenEffectHost(
         is PlayerFocusIntent.FocusInteractiveOption -> null
         PlayerFocusIntent.FocusDanmakuVoteOverlay -> null
     }
-    LaunchedEffect(focusIntent, focusTargetIdentity, args.voteOwnsFocus) {
-        if (args.voteOwnsFocus) return@LaunchedEffect
+    LaunchedEffect(focusIntent, focusTargetIdentity, args.exclusiveOverlayOwner) {
+        if (args.exclusiveOverlayOwner != null) return@LaunchedEffect
         playerFocusCoordinator.requestFocus(focusIntent)
         withFrameNanos { }
         playerFocusCoordinator.drainPendingFocus()

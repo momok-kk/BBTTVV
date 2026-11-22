@@ -48,7 +48,7 @@ class TvDpadHomeRegressionTest {
     @Test
     fun recommendRapidVerticalNavigationKeepsAValidInAppFocusTarget() = withHome {
         robot.ensureHomeTopBar()
-        assumeTrue("Recommend tab should be focusable before rapid D-Pad regression", robot.focusTopTab("鎺ㄨ崘"))
+        assumeTrue("Recommend tab should be focusable before rapid D-Pad regression", robot.focusTopTab("推荐"))
         assumeTrue("Recommend cards are required for rapid D-Pad regression", robot.focusHomeContent())
 
         repeat(8) { robot.press(KeyEvent.KEYCODE_DPAD_DOWN) }
@@ -72,6 +72,20 @@ class TvDpadHomeRegressionTest {
         robot.settle()
 
         assertTrue("Left boundary must keep focus on 搜索", robot.focusedLabel() == "搜索")
+    }
+
+    @Test
+    fun backFromProfileTabSelectsAndFocusesRecommendTogether() = withHome {
+        robot.ensureHomeTopBar()
+        assertTrue("Recommend tab should be reachable", robot.focusTopTab("推荐"))
+        for (label in listOf("热门", "直播", "动态", "我的")) {
+            robot.press(KeyEvent.KEYCODE_DPAD_RIGHT)
+            assertTrue("Right should focus $label", robot.waitUntilFocusedOnTopTab(label))
+        }
+
+        robot.press(KeyEvent.KEYCODE_BACK)
+
+        assertTrue("Back should put focus on the newly selected 推荐 tab", robot.waitUntilFocusedOnTopTab("推荐"))
     }
 
     @Test

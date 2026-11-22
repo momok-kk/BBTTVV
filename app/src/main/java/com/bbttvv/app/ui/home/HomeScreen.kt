@@ -280,8 +280,12 @@ internal fun HomeScreen(
 
     val isInHomeContent = focusCoordinator.isContentFocused || restoreDynamicLiveRoomId != null
     BackHandler(enabled = !isInHomeContent && selectedHomeTab != AppTopLevelTab.RECOMMEND) {
-        selectHomeTab(AppTopLevelTab.RECOMMEND, HomeFocusScene.BackToRecommend)
-        requestTopBarFromContent(HomeFocusScene.BackToRecommend)
+        onCancelVideoFocusRestore()
+        selectHomeTab(
+            targetTab = AppTopLevelTab.RECOMMEND,
+            scene = HomeFocusScene.BackToRecommend,
+            keepTopBarFocus = true,
+        )
     }
 
     BackHandler(enabled = isInHomeContent) {
