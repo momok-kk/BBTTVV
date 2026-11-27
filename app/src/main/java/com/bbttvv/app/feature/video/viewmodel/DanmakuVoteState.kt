@@ -62,6 +62,7 @@ sealed interface DanmakuVoteUiState {
         val prompt: DanmakuVotePrompt,
         val selectedIndex: Int,
         val message: String,
+        val progressMs: Long,
     ) : DanmakuVoteUiState
 
     data class Submitted(
@@ -217,7 +218,13 @@ private fun JsonObject.text(vararg keys: String): String =
     keys.firstNotNullOfOrNull { (this[it] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf(String::isNotBlank) }.orEmpty()
 
 private fun JsonObject.boolean(vararg keys: String): Boolean =
-    keys.firstNotNullOfOrNull { (this[it] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() } ?: false
+    keys.firstNotNullOfOrNull { key ->
+        when ((this[key] as? JsonPrimitive)?.contentOrNull) {
+            "true", "1" -> true
+            "false", "0" -> false
+            else -> null
+        }
+    } ?: false
 
 @Serializable
 private data class DanmakuGradePayload(

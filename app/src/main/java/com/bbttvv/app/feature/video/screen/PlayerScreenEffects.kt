@@ -24,6 +24,7 @@ import com.bbttvv.app.core.player.BufferingSpeedMeter
 import com.bbttvv.app.core.player.ExoPlayerReleaseGuard
 import com.bbttvv.app.core.player.PausePlaybackOnAppBackgroundEffect
 import com.bbttvv.app.core.player.PlaybackKeepScreenOnEffect
+import com.bbttvv.app.core.player.PlayerBufferConfiguration
 import com.bbttvv.app.core.player.clearPlayerViewReference
 import com.bbttvv.app.feature.video.viewmodel.PlayerEvent
 import com.bbttvv.app.feature.video.viewmodel.PlayerPlaybackState
@@ -71,6 +72,7 @@ internal data class PlayerScreenEffectArgs(
     val exitTrace: PlayerExitTrace,
     val isDebugOverlayVisible: Boolean,
     val bufferingSpeedMeter: BufferingSpeedMeter,
+    val bufferConfiguration: PlayerBufferConfiguration,
     val playbackSnapshotProvider: () -> PlayerPlaybackState,
     val latestHandleOverlayEffect: State<(PlayerOverlayEffect) -> Unit>,
     val latestUiState: State<PlayerUiState>,
@@ -265,6 +267,9 @@ internal fun PlayerScreenEffectHost(
                     player = args.exoPlayer,
                     uiState = args.latestUiState.value,
                     playbackState = args.playbackSnapshotProvider(),
+                    bufferedBytes = args.bufferConfiguration.bufferedBytes,
+                    targetBufferBytes = args.bufferConfiguration.policy.targetBufferBytes,
+                    bytesPerSecond = args.bufferingSpeedMeter.bytesPerSecond(),
                     frameSample = frameSample,
                     displayRefreshRateHz = resolvePlayerDisplayRefreshRate(
                         context = context,

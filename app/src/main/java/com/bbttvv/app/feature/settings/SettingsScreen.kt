@@ -1,5 +1,8 @@
 package com.bbttvv.app.feature.settings
 
+import android.content.res.ColorStateList
+import android.text.format.Formatter
+import android.widget.ProgressBar
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
@@ -39,6 +42,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
@@ -48,6 +52,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Border
@@ -64,6 +69,7 @@ import com.bbttvv.app.core.store.TokenManager
 import com.bbttvv.app.core.store.formatPlayerVolumeCalibrationLabel
 import com.bbttvv.app.core.store.player.PlayerSettingsStore
 import com.bbttvv.app.core.update.AppUpdateCheckResult
+import com.bbttvv.app.core.update.AppUpdateDownloadProgress
 import com.bbttvv.app.core.update.AppUpdateDownloadResult
 import com.bbttvv.app.core.update.AppUpdateInstaller
 import com.bbttvv.app.core.update.AppUpdateRepository
@@ -84,6 +90,10 @@ import com.bbttvv.app.ui.focus.RegisterTvFocusEscapeTarget
 import com.bbttvv.app.ui.focus.RegisterTvFocusReturnTarget
 import com.bbttvv.app.ui.focus.isSameOrDescendantOf
 import com.bbttvv.app.ui.theme.LocalTvSemanticColors
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 private object SettingsFocusReturnKeys {
@@ -119,7 +129,7 @@ private const val MOBILE_FEED_TOKEN_MISSING_MESSAGE =
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, appUpdateRepository: AppUpdateRepository? = null) {
     val hostView = LocalView.current
     val backFocusRequester = remember { FocusRequester() }
 
@@ -328,7 +338,8 @@ fun SettingsScreen(onBack: () -> Unit) {
                             uiFirstFocus = uiFirstFocus,
                             feedFirstFocus = feedFirstFocus,
                             networkFirstFocus = networkFirstFocus,
-                            systemFirstFocus = systemFirstFocus
+                            systemFirstFocus = systemFirstFocus,
+                            appUpdateRepository = appUpdateRepository,
                         )
                     }
                 }
@@ -349,13 +360,14 @@ fun TvSettingsList(
     feedFirstFocus: FocusRequester = remember { FocusRequester() },
     networkFirstFocus: FocusRequester = remember { FocusRequester() },
     systemFirstFocus: FocusRequester = remember { FocusRequester() },
-    initialFocusRequester: FocusRequester? = null
+    initialFocusRequester: FocusRequester? = null,
+    appUpdateRepository: AppUpdateRepository? = null,
 ) {
     val context = LocalContext.current
     val tvNoticeHostState = LocalTvNoticeHostState.current
     val scope = rememberCoroutineScope()
     val blockedUpRepository = remember(context) { BlockedUpRepository(context.applicationContext) }
-    val updateRepository = remember(context) { AppUpdateRepository(context.applicationContext) }
+    val updateRepository = appUpdateRepository ?: remember(context) { AppUpdateRepository(context.applicationContext) }
 
     val appSettings by SettingsManager.getSettingsSnapshot(context)
         .collectAsStateWithLifecycle(initialValue = SettingsManager.getSettingsSnapshotSync(context))
@@ -401,7 +413,10 @@ fun TvSettingsList(
     var availableUpdate by remember { mutableStateOf<AvailableAppUpdate?>(null) }
     var updateError by remember { mutableStateOf<String?>(null) }
     var isCheckingUpdate by remember { mutableStateOf(false) }
-    var isDownloadingUpdate by remember { mutableStateOf(false) }
+    var updateDownloadJob by remember { mutableStateOf<Job?>(null) }
+    val isDownloadingUpdate = updateDownloadJob != null
+    val updateDownloadProgress = remember { MutableStateFlow<AppUpdateDownloadProgress?>(null) }
+    var downloadedUpdate by remember { mutableStateOf<AppUpdateDownloadResult.ReadyToInstall?>(null) }
     var customCdnValidationMessage by remember { mutableStateOf<String?>(null) }
     var activeChoice by remember { mutableStateOf<SettingsChoice?>(null) }
     var userAgentDraft by remember { mutableStateOf(DEFAULT_APP_USER_AGENT) }
@@ -967,8 +982,9 @@ fun TvSettingsList(
                         "settings_check_update",
                         leftModifier.focusRequester(checkUpdateFocusRequester),
                     ),
-                    enabled = !isCheckingUpdate && !isDownloadingUpdate,
-                    onClick = {
+                    enabled = !isCheckingUpdate,
+                    onClick = checkUpdate@{
+                        if (isCheckingUpdate || updateDownloadJob != null) return@checkUpdate
                         isCheckingUpdate = true
                         updateError = null
                         scope.launch {
@@ -984,10 +1000,13 @@ fun TvSettingsList(
                                         tvNoticeHostState.show("当前已经是最新版本")
                                     }
                                     is AppUpdateCheckResult.UpdateAvailable -> {
+                                        downloadedUpdate = null
                                         availableUpdate = result.update
                                         showUpdateDialog = true
                                     }
                                 }
+                            } catch (error: CancellationException) {
+                                throw error
                             } catch (error: Exception) {
                                 updateError = resolveUpdateNetworkError(error)
                                 tvNoticeHostState.show(updateError.orEmpty(), kind = TvNoticeKind.Error)
@@ -1094,61 +1113,103 @@ fun TvSettingsList(
         )
     }
 
-    if (showUpdateDialog) {
-        val update = availableUpdate
+    val update = availableUpdate
+    if (showUpdateDialog && update != null) {
+        val ready = downloadedUpdate
+        val dismiss = {
+            updateDownloadJob?.cancel()
+            showUpdateDialog = false
+        }
+
+        fun installDownloadedUpdate(result: AppUpdateDownloadResult.ReadyToInstall) {
+            try {
+                if (!AppUpdateInstaller.canRequestInstalls(context)) {
+                    updateError = "请在系统设置中允许 BBTTVV 安装未知应用，返回后再选择「安装更新」。"
+                    AppUpdateInstaller.openUnknownSourcesSettings(context)
+                    return
+                }
+                AppUpdateInstaller.requestInstall(context, result.apkFile)
+                showUpdateDialog = false
+            } catch (_: Exception) {
+                updateError = "无法打开系统安装界面，请重试。"
+            }
+        }
+
         TvDialog(
-            title = "发现新版本 ${update?.versionName.orEmpty()}",
-            onDismissRequest = { showUpdateDialog = false },
+            title = "发现新版本 ${update.versionName}",
+            onDismissRequest = dismiss,
             returnFocusKey = SettingsFocusReturnKeys.CheckUpdate,
             returnFocusFallbackKeys = listOf(SettingsFocusReturnKeys.Back),
             content = {
-                Text(
-                    text = update?.releaseNotes?.takeIf { it.isNotBlank() }
-                        ?: "已发现适用于此电视的更新包。",
-                    color = if (com.bbttvv.app.ui.theme.LocalIsLightTheme.current) {
-                        Color(0xFF61666D)
-                    } else {
-                        Color(0xDDEAF2F8)
-                    },
-                    fontSize = 15.sp,
-                    lineHeight = 22.sp,
-                )
-                if (updateError != null) {
+                val progress = updateDownloadProgress.collectAsStateWithLifecycle().value
+                if (isDownloadingUpdate && progress != null) {
+                    UpdateDownloadProgress(progress)
+                } else {
                     Text(
-                        text = updateError.orEmpty(),
+                        text = if (ready != null) {
+                            "更新包已下载并校验完成。"
+                        } else {
+                            update.releaseNotes.ifBlank { "已发现适用于此电视的更新包。" }
+                        },
+                        color = LocalTvSemanticColors.current.secondaryText,
+                        fontSize = 15.sp,
+                        lineHeight = 22.sp,
+                    )
+                }
+                updateError?.let { error ->
+                    Text(
+                        text = error,
                         color = MaterialTheme.colorScheme.error,
                         fontSize = 14.sp,
                     )
                 }
             },
             actions = {
+                if (!isDownloadingUpdate) {
+                    TvDialogActionButton(
+                        text = if (ready == null) "取消" else "关闭",
+                        onClick = dismiss,
+                    )
+                }
                 TvDialogActionButton(
-                    text = "取消",
-                    onClick = { showUpdateDialog = false },
-                )
-                TvDialogActionButton(
-                    text = if (isDownloadingUpdate) "下载中" else "下载更新",
+                    text = when {
+                        isDownloadingUpdate -> "取消下载"
+                        ready != null -> "安装更新"
+                        updateError != null -> "重试下载"
+                        else -> "下载更新"
+                    },
                     onClick = {
-                        val updateToDownload = update ?: return@TvDialogActionButton
-                        if (isDownloadingUpdate) return@TvDialogActionButton
-                        if (!AppUpdateInstaller.canRequestInstalls(context)) {
-                            updateError = "请先在系统设置中允许 BBTTVV 安装未知应用，然后返回此处下载。"
-                            AppUpdateInstaller.openUnknownSourcesSettings(context)
+                        if (isDownloadingUpdate) {
+                            dismiss()
                             return@TvDialogActionButton
                         }
-                        isDownloadingUpdate = true
+                        if (updateDownloadJob != null) return@TvDialogActionButton
+                        if (ready != null) {
+                            installDownloadedUpdate(ready)
+                            return@TvDialogActionButton
+                        }
                         updateError = null
-                        scope.launch {
-                            when (val result = updateRepository.downloadAndVerify(updateToDownload)) {
-                                is AppUpdateDownloadResult.Rejected -> {
-                                    updateError = result.reason
-                                    isDownloadingUpdate = false
-                                }
+                        updateDownloadProgress.value = AppUpdateDownloadProgress.Downloading(0, null)
+                        updateDownloadJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                            try {
+                                when (val result = updateRepository.downloadAndVerify(update) {
+                                    updateDownloadProgress.value = it
+                                }) {
+                                    is AppUpdateDownloadResult.Rejected -> updateError = result.reason
                                     is AppUpdateDownloadResult.ReadyToInstall -> {
-                                        isDownloadingUpdate = false
-                                        showUpdateDialog = false
-                                        AppUpdateInstaller.requestInstall(context, result.apkFile)
+                                        downloadedUpdate = result
+                                        if (AppUpdateInstaller.canRequestInstalls(context)) {
+                                            installDownloadedUpdate(result)
+                                        }
                                     }
+                                }
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (error: Exception) {
+                                updateError = resolveUpdateNetworkError(error)
+                            } finally {
+                                updateDownloadProgress.value = null
+                                updateDownloadJob = null
                             }
                         }
                     },
@@ -1392,6 +1453,39 @@ fun TvSettingsList(
 
         null -> Unit
     }
+}
+
+@Composable
+private fun UpdateDownloadProgress(progress: AppUpdateDownloadProgress) {
+    val context = LocalContext.current
+    val colors = LocalTvSemanticColors.current
+    val download = progress as? AppUpdateDownloadProgress.Downloading
+    val percent = download?.percent
+    val message = when (progress) {
+        AppUpdateDownloadProgress.Verifying -> "下载完成，正在校验更新包…"
+        is AppUpdateDownloadProgress.Downloading -> {
+            val downloaded = Formatter.formatFileSize(context, progress.downloadedBytes)
+            val total = progress.totalBytes?.let { Formatter.formatFileSize(context, it) }
+            when {
+                percent != null && total != null -> "正在下载更新 $percent%（$downloaded / $total）"
+                progress.downloadedBytes > 0 -> "正在下载更新，已下载 $downloaded"
+                else -> "正在连接更新服务器…"
+            }
+        }
+    }
+    Text(text = message, color = colors.secondaryText, fontSize = 15.sp)
+    AndroidView(
+        factory = { ProgressBar(it, null, android.R.attr.progressBarStyleHorizontal) },
+        modifier = Modifier.fillMaxWidth().height(8.dp),
+        update = { bar ->
+            val tint = ColorStateList.valueOf(colors.accent.toArgb())
+            bar.progressTintList = tint
+            bar.indeterminateTintList = tint
+            bar.progressBackgroundTintList = ColorStateList.valueOf(colors.accent.copy(alpha = 0.23f).toArgb())
+            bar.isIndeterminate = percent == null
+            if (percent != null) bar.progress = percent
+        },
+    )
 }
 
 @OptIn(ExperimentalTvMaterial3Api::class)

@@ -27,6 +27,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import com.bbttvv.app.core.player.BufferingSpeedMeter
+import com.bbttvv.app.core.player.PlayerBufferConfiguration
 import com.bbttvv.app.core.player.clearPlayerViewReference
 import com.bbttvv.app.core.player.createConfiguredPlayer
 import com.bbttvv.app.core.store.SettingsManager
@@ -200,10 +201,12 @@ fun PlayerScreen(
     }
 
     val bufferingSpeedMeter = remember { BufferingSpeedMeter() }
-    val exoPlayer = remember(context, bufferingSpeedMeter) {
+    val bufferConfiguration = remember(context) { PlayerBufferConfiguration(isOnDemand = true) }
+    val exoPlayer = remember(context, bufferingSpeedMeter, bufferConfiguration) {
         createConfiguredPlayer(
             context = context,
             transferListener = bufferingSpeedMeter,
+            bufferConfiguration = bufferConfiguration,
         )
     }
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
@@ -334,6 +337,7 @@ fun PlayerScreen(
             exitTrace = exitTrace,
             isDebugOverlayVisible = isDebugOverlayVisible,
             bufferingSpeedMeter = bufferingSpeedMeter,
+            bufferConfiguration = bufferConfiguration,
             playbackSnapshotProvider = playbackSnapshotProvider,
             latestHandleOverlayEffect = latestHandleOverlayEffect,
             latestUiState = latestUiState,

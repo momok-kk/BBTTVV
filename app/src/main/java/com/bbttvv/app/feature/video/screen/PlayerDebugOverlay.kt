@@ -37,6 +37,8 @@ internal data class PlayerDebugSnapshot(
     val frames: String = "--",
     val currentOptimal: String = "--",
     val bufferHealth: String = "--",
+    val bufferMemory: String = "--",
+    val mediaLoading: String = "--",
     val codecs: String = "--",
     val quality: String = "--",
     val trackBitrate: String = "--",
@@ -66,6 +68,8 @@ internal fun PlayerDebugOverlay(
         DebugInfoLine("Frames", snapshot.frames)
         DebugInfoLine("Position / Selected", snapshot.currentOptimal)
         DebugInfoLine("Buffer Health", snapshot.bufferHealth)
+        DebugInfoLine("Buffer Memory", snapshot.bufferMemory)
+        DebugInfoLine("Loading / CDN Speed", snapshot.mediaLoading)
         DebugInfoLine("Codecs", snapshot.codecs)
         DebugInfoLine("Quality", snapshot.quality)
         DebugInfoLine("Track Bitrate", snapshot.trackBitrate)
@@ -109,6 +113,9 @@ internal fun buildPlayerDebugSnapshot(
     player: ExoPlayer,
     uiState: PlayerUiState,
     playbackState: PlayerPlaybackState,
+    bufferedBytes: Int,
+    targetBufferBytes: Int,
+    bytesPerSecond: Long,
     frameSample: PlayerDebugFrameSample? = null,
     displayRefreshRateHz: Float = 0f,
 ): PlayerDebugSnapshot {
@@ -144,6 +151,8 @@ internal fun buildPlayerDebugSnapshot(
         ),
         currentOptimal = "${formatDuration(playbackState.positionMs)} / $optimal",
         bufferHealth = formatDebugSeconds(bufferMs),
+        bufferMemory = String.format(Locale.US, "%.1f / %.0f MiB", bufferedBytes / 1_048_576f, targetBufferBytes / 1_048_576f),
+        mediaLoading = if (player.isLoading) "on / ${bytesPerSecond * 8 / 1000} Kbps" else "off / --",
         codecs = buildDebugCodecs(uiState),
         quality = uiState.selectedQualityLabel.ifBlank { uiState.selectedQuality.toString() },
         trackBitrate = if (totalBitrate > 0) "${totalBitrate / 1000} Kbps" else "--",

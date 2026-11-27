@@ -6,11 +6,20 @@ import android.content.pm.PackageManager
 import android.os.Build
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.SocketTimeoutException
 import java.security.MessageDigest
 import java.util.Properties
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -22,6 +31,7 @@ private const val GITHUB_VERSION_PROPERTIES_URL =
 private const val GITHUB_LATEST_DOWNLOAD_URL =
     "https://github.com/momok-kk/BBTTVV/releases/latest/download"
 private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
+private val updateDownloadMutex = Mutex()
 
 /** A GitHub release that has a compatible APK attached. */
 data class AvailableAppUpdate(
@@ -40,6 +50,15 @@ sealed interface AppUpdateCheckResult {
 sealed interface AppUpdateDownloadResult {
     data class ReadyToInstall(val apkFile: File, val versionName: String) : AppUpdateDownloadResult
     data class Rejected(val reason: String) : AppUpdateDownloadResult
+}
+
+internal sealed interface AppUpdateDownloadProgress {
+    data class Downloading(val downloadedBytes: Long, val totalBytes: Long?) : AppUpdateDownloadProgress {
+        val percent: Int?
+            get() = totalBytes?.let { ((downloadedBytes.toDouble() / it) * 100).toInt().coerceIn(0, 100) }
+    }
+
+    data object Verifying : AppUpdateDownloadProgress
 }
 
 /**
@@ -81,47 +100,71 @@ class AppUpdateRepository(
         )
     }
 
-    suspend fun downloadAndVerify(update: AvailableAppUpdate): AppUpdateDownloadResult =
+    internal suspend fun downloadAndVerify(
+        update: AvailableAppUpdate,
+        onProgress: (AppUpdateDownloadProgress) -> Unit,
+    ): AppUpdateDownloadResult =
         withContext(Dispatchers.IO) {
-            val updatesDir = File(appContext.cacheDir, "updates").apply { mkdirs() }
-            val target = File(updatesDir, "BBTTVV-update.apk")
-            val temporary = File(updatesDir, "BBTTVV-update.apk.part")
-            temporary.delete()
-
-            try {
-                val request = Request.Builder()
-                    .url(update.downloadUrl)
-                    .header("Accept", APK_MIME_TYPE)
-                    .header("User-Agent", "BBTTVV-updater")
-                    .build()
-                httpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        return@withContext AppUpdateDownloadResult.Rejected(
-                            "下载失败（${response.code}）"
-                        )
+            updateDownloadMutex.withLock {
+                val updatesDir = File(appContext.cacheDir, "updates").apply { mkdirs() }
+                val target = File(updatesDir, "BBTTVV-update.apk")
+                val temporary = File(updatesDir, "BBTTVV-update.apk.part")
+                try {
+                    val responseCode = downloadApk(update, temporary, onProgress)
+                    if (responseCode !in 200..299) {
+                        return@withLock AppUpdateDownloadResult.Rejected("下载失败（$responseCode）")
                     }
-                    val body = response.body
-                    body.byteStream().use { input ->
-                        temporary.outputStream().buffered().use { output -> input.copyTo(output) }
+                    currentCoroutineContext().ensureActive()
+                    onProgress(AppUpdateDownloadProgress.Verifying)
+                    if (update.sha256 != null && sha256(temporary) != update.sha256.lowercase()) {
+                        return@withLock AppUpdateDownloadResult.Rejected("更新包校验失败，请稍后重试")
                     }
-                }
-                if (update.sha256 != null && sha256(temporary) != update.sha256.lowercase()) {
-                    return@withContext AppUpdateDownloadResult.Rejected("更新包校验失败，请稍后重试")
-                }
-                when (val verification = verifyApk(temporary)) {
-                    is ApkVerification.Accepted -> {
-                        target.delete()
-                        if (!temporary.renameTo(target)) {
-                            return@withContext AppUpdateDownloadResult.Rejected("无法保存更新包")
+                    when (val verification = verifyApk(temporary)) {
+                        is ApkVerification.Accepted -> {
+                            currentCoroutineContext().ensureActive()
+                            target.delete()
+                            if (!temporary.renameTo(target)) {
+                                return@withLock AppUpdateDownloadResult.Rejected("无法保存更新包")
+                            }
+                            AppUpdateDownloadResult.ReadyToInstall(target, verification.versionName)
                         }
-                        AppUpdateDownloadResult.ReadyToInstall(target, verification.versionName)
+                        is ApkVerification.Rejected -> AppUpdateDownloadResult.Rejected(verification.reason)
                     }
-                    is ApkVerification.Rejected -> AppUpdateDownloadResult.Rejected(verification.reason)
+                } finally {
+                    temporary.delete()
                 }
-            } finally {
-                temporary.delete()
             }
         }
+
+    private suspend fun downloadApk(
+        update: AvailableAppUpdate,
+        destination: File,
+        onProgress: (AppUpdateDownloadProgress.Downloading) -> Unit,
+    ): Int = suspendCancellableCoroutine { continuation ->
+        val request = Request.Builder()
+            .url(update.downloadUrl)
+            .header("Accept", APK_MIME_TYPE)
+            .header("User-Agent", "BBTTVV-updater")
+            .build()
+        val call = httpClient.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        try {
+            val code = call.execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body
+                    body.byteStream().use { input ->
+                        destination.outputStream().buffered().use { output ->
+                            copyUpdateApk(input, output, body.contentLength(), onProgress)
+                        }
+                    }
+                }
+                response.code
+            }
+            continuation.resume(code)
+        } catch (error: Exception) {
+            continuation.resumeWithException(error)
+        }
+    }
 
     private fun verifyApk(apk: File): ApkVerification {
         val archive = appContext.packageManager.getPackageArchiveInfo(
@@ -142,6 +185,35 @@ class AppUpdateRepository(
             return ApkVerification.Rejected("更新包签名与当前应用不一致")
         }
         return ApkVerification.Accepted(archive.versionName.orEmpty())
+    }
+}
+
+internal fun copyUpdateApk(
+    input: InputStream,
+    output: OutputStream,
+    contentLength: Long,
+    onProgress: (AppUpdateDownloadProgress.Downloading) -> Unit,
+) {
+    val totalBytes = contentLength.takeIf { it > 0 }
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var downloadedBytes = 0L
+    var reportedBytes = 0L
+    var lastReportAt = System.nanoTime()
+    onProgress(AppUpdateDownloadProgress.Downloading(0, totalBytes))
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        output.write(buffer, 0, count)
+        downloadedBytes += count
+        val now = System.nanoTime()
+        if (now - lastReportAt >= TimeUnit.MILLISECONDS.toNanos(200)) {
+            onProgress(AppUpdateDownloadProgress.Downloading(downloadedBytes, totalBytes))
+            reportedBytes = downloadedBytes
+            lastReportAt = now
+        }
+    }
+    if (downloadedBytes != reportedBytes) {
+        onProgress(AppUpdateDownloadProgress.Downloading(downloadedBytes, totalBytes))
     }
 }
 

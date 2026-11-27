@@ -1,7 +1,7 @@
 package com.bbttvv.app.feature.video.screen
 
-import android.view.KeyEvent
 import android.os.SystemClock
+import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -37,15 +37,25 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
-import kotlin.math.roundToInt
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.tv.material3.Text
-import com.bbttvv.app.feature.video.viewmodel.DanmakuVoteUiState
 import com.bbttvv.app.feature.video.viewmodel.DanmakuVoteKind
+import com.bbttvv.app.feature.video.viewmodel.DanmakuVoteUiState
+import kotlin.math.roundToInt
 
 internal typealias DanmakuVoteKeyHandler = (KeyEvent) -> Boolean
+
+private val interactionCardShape = RoundedCornerShape(16.dp)
+private val interactionOptionShape = RoundedCornerShape(8.dp)
+private val interactionCardSurface = Color(0xFF1B1723)
+private val interactionCardBorder = Color(0xFF62556C)
+private val interactionOptionSurface = Color(0xFF302738)
+private val interactionText = Color(0xFFFAF7FF)
+private val interactionMutedText = Color(0xFFC4B9CF)
+private val interactionFocus = Color(0xFFEFDDFF)
+private val interactionFocusText = Color(0xFF241533)
 
 @Composable
 internal fun BoxScope.DanmakuVoteOverlay(
@@ -67,6 +77,7 @@ internal fun BoxScope.DanmakuVoteOverlay(
     val error = state as? DanmakuVoteUiState.RetryableError
     val submitted = state as? DanmakuVoteUiState.Submitted
     val prompt = showing?.prompt ?: submitting?.prompt ?: error?.prompt ?: submitted?.prompt ?: return
+    val isGrade = prompt.kind == DanmakuVoteKind.Grade
     val remainingSeconds = remember(prompt.interactionKey, showing?.deadlineElapsedMs) {
         mutableIntStateOf(
             showing?.deadlineElapsedMs
@@ -191,38 +202,41 @@ internal fun BoxScope.DanmakuVoteOverlay(
             modifier = Modifier
                 .widthIn(max = compactDialogWidth)
                 .heightIn(max = compactDialogHeight)
-                .background(Color(0xE61A1A1A), RoundedCornerShape(16.dp))
-                .padding(10.dp)
+                .background(interactionCardSurface, interactionCardShape)
+                .border(1.dp, interactionCardBorder, interactionCardShape)
+                .padding(12.dp)
                 .focusRequester(overlayFocusRequester)
                 .focusable(),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    prompt.question, modifier = Modifier.weight(1f), color = Color.White, fontSize = 20.sp,
-                    maxLines = 3, overflow = TextOverflow.Ellipsis,
+                    text = if (isGrade) "评分" else "投票",
+                    color = interactionFocus,
+                    fontSize = 13.sp,
+                    maxLines = 1,
                 )
                 if (showing != null && remainingSeconds.intValue > 0) {
-                    Box(
-                        modifier = Modifier
-                            .border(1.dp, Color(0x55666666), RoundedCornerShape(8.dp))
-                            .background(Color(0x33222222), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 7.dp, vertical = 3.dp),
-                    ) {
-                        Text(
-                            text = "${remainingSeconds.intValue}s",
-                            color = Color(0xFF9E9E9E),
-                            fontSize = 13.sp,
-                            maxLines = 1,
-                        )
-                    }
+                    Text(
+                        text = "${remainingSeconds.intValue} 秒",
+                        color = interactionMutedText,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                    )
                 }
             }
-            if (prompt.kind == DanmakuVoteKind.Grade) {
+            Text(
+                text = prompt.question,
+                color = interactionText,
+                fontSize = 20.sp,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (isGrade) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     prompt.options.forEachIndexed { index, option ->
                         val focused = index == activeIndex.intValue
@@ -232,21 +246,25 @@ internal fun BoxScope.DanmakuVoteOverlay(
                             modifier = Modifier
                                 .weight(1f)
                                 .semantics { contentDescription = "${option.gradeScore!! / 2}星" }
-                                .border(
-                                    width = 3.dp,
-                                    color = if (focused) Color.White else Color.Transparent,
-                                    shape = RoundedCornerShape(10.dp),
-                                )
                                 .background(
-                                    if (focused) Color(0xFF3F51B5) else Color.Transparent,
-                                    RoundedCornerShape(10.dp),
+                                    if (focused) interactionFocus else interactionOptionSurface,
+                                    interactionOptionShape,
+                                )
+                                .border(
+                                    width = 2.dp,
+                                    color = if (focused) interactionText else Color.Transparent,
+                                    shape = interactionOptionShape,
                                 )
                                 .padding(vertical = 4.dp),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
                                 text = if (preview || selected) "★" else "☆",
-                                color = if (selected) Color(0xFFFFD54F) else Color.White,
+                                color = when {
+                                    focused -> interactionFocusText
+                                    selected -> Color(0xFFFFD54F)
+                                    else -> interactionText
+                                },
                                 fontSize = 25.sp,
                             )
                         }
@@ -263,20 +281,20 @@ internal fun BoxScope.DanmakuVoteOverlay(
                     val selected = prompt.selectedOptionId == option.id
                     Box(
                         modifier = Modifier.fillMaxWidth()
-                            .border(
-                                width = if (focused) 3.dp else 1.dp,
-                                color = if (focused) Color.White else Color(0xFF666666),
-                                shape = RoundedCornerShape(10.dp),
-                            )
                             .background(
                                 when {
-                                    focused -> Color(0xFF3F51B5)
-                                    selected -> Color(0xFF285943)
-                                    else -> Color(0xFF292929)
+                                    focused -> interactionFocus
+                                    selected -> Color(0xFF234738)
+                                    else -> interactionOptionSurface
                                 },
-                                RoundedCornerShape(10.dp),
+                                interactionOptionShape,
                             )
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                            .border(
+                                width = 2.dp,
+                                color = if (focused) interactionText else Color.Transparent,
+                                shape = interactionOptionShape,
+                            )
+                            .padding(horizontal = 9.dp, vertical = 6.dp),
                     ) {
                         val suffix = when {
                             submitting?.selectedIndex == index -> " · 提交中"
@@ -285,7 +303,7 @@ internal fun BoxScope.DanmakuVoteOverlay(
                         }
                         Text(
                             text = option.text + suffix,
-                            color = Color.White,
+                            color = if (focused) interactionFocusText else interactionText,
                             fontSize = 16.sp,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
@@ -295,17 +313,13 @@ internal fun BoxScope.DanmakuVoteOverlay(
             }
             if (error != null) {
                 Text(error.message, color = Color(0xFFFFB4AB), fontSize = 14.sp)
-                Text("确认重试 · 返回关闭", color = Color.White, fontSize = 14.sp)
-            } else if (submitting != null && prompt.kind == DanmakuVoteKind.Grade) {
-                Text("正在提交 ${submitting.selectedIndex + 1} 星 · 返回关闭", color = Color.White, fontSize = 14.sp)
+                Text("确认重试", color = interactionMutedText, fontSize = 14.sp)
+            } else if (submitting != null && isGrade) {
+                Text("正在提交 ${submitting.selectedIndex + 1} 星", color = interactionMutedText, fontSize = 14.sp)
             } else if (submitted != null) {
-                Text(if (prompt.kind == DanmakuVoteKind.Grade) "打分成功" else "投票成功", color = Color(0xFF9BE8C2), fontSize = 14.sp)
+                Text(if (isGrade) "打分成功" else "投票成功", color = Color(0xFF9BE8C2), fontSize = 14.sp)
             } else if (prompt.selectedOptionId > 0) {
-                Text(if (prompt.kind == DanmakuVoteKind.Grade) "你已经参与过该打分" else "你已经参与过该投票", color = Color(0xFFB7C7FF), fontSize = 14.sp)
-            } else if (prompt.kind == DanmakuVoteKind.Grade) {
-                Text("${activeIndex.intValue + 1} 星 · 上下选星 · 确认 · 返回取消", color = Color.White, fontSize = 14.sp)
-            } else if (showing != null) {
-                Text("上下选择 · 确认 · 返回取消", color = Color.LightGray, fontSize = 13.sp)
+                Text(if (isGrade) "你已经参与过该打分" else "你已经参与过该投票", color = interactionMutedText, fontSize = 14.sp)
             }
         }
     }

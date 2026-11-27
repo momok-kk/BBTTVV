@@ -1,11 +1,39 @@
 package com.bbttvv.app.core.update
 
+import java.io.ByteArrayOutputStream
+import java.net.UnknownHostException
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
-import java.net.UnknownHostException
 
 class AppUpdateRepositoryTest {
+    @Test
+    fun copyUpdateApk_reportsKnownLengthAndCompletion() {
+        val payload = ByteArray(20_000) { it.toByte() }
+        val output = ByteArrayOutputStream()
+        val progress = mutableListOf<AppUpdateDownloadProgress.Downloading>()
+
+        copyUpdateApk(payload.inputStream(), output, payload.size.toLong(), progress::add)
+
+        assertArrayEquals(payload, output.toByteArray())
+        assertEquals(0, progress.first().percent)
+        assertEquals(100, progress.last().percent)
+        assertEquals(payload.size.toLong(), progress.last().downloadedBytes)
+    }
+
+    @Test
+    fun copyUpdateApk_reportsBytesWithoutPercentageWhenLengthIsUnknown() {
+        val output = ByteArrayOutputStream()
+        val progress = mutableListOf<AppUpdateDownloadProgress.Downloading>()
+
+        copyUpdateApk(byteArrayOf(1, 2, 3).inputStream(), output, -1, progress::add)
+
+        assertEquals(AppUpdateDownloadProgress.Downloading(0, null), progress.first())
+        assertEquals(AppUpdateDownloadProgress.Downloading(3, null), progress.last())
+        assertNull(progress.last().percent)
+    }
+
     @Test
     fun selectCompatibleApk_prefersDeviceAbiOrder() {
         val arm64 = GithubReleaseAsset(

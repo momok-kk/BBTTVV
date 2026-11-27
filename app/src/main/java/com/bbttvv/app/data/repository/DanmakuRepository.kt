@@ -435,13 +435,14 @@ object DanmakuRepository {
                 voteType = voteType,
                 commandId = commandId,
                 optionId = optionId,
-                hasSelfDefined = hasSelfDefined,
+                hasSelfDefined = if (hasSelfDefined) 1 else 0,
                 polarisAppId = com.bbttvv.app.core.network.DANMAKU_VOTE_POLARIS_APP_ID,
                 polarisPlatform = com.bbttvv.app.core.network.DANMAKU_VOTE_POLARIS_PLATFORM,
+                statistics = com.bbttvv.app.core.network.DANMAKU_INTERACTION_STATISTICS,
                 csrf = csrf,
             )
             if (response.code != 0) {
-                throw IllegalStateException(response.message.ifBlank { "投票失败(${response.code})" })
+                throw IllegalStateException("${response.message.ifBlank { "投票失败" }}（${response.code}）")
             }
         }
     }
@@ -460,16 +461,21 @@ object DanmakuRepository {
         if (csrf.isBlank() || TokenManager.sessDataCache.isNullOrBlank()) {
             return@withContext Result.failure(IllegalStateException("请先登录后打分"))
         }
-        runCatching {
+        runSuspendCatching {
             val response = api.submitDanmakuGrade(
-                aid = aid, cid = cid, progress = progressMs.coerceAtLeast(0L),
-                gradeId = gradeId, gradeScore = gradeScore, csrf = csrf,
+                aid = aid,
+                cid = cid,
+                progress = progressMs.coerceAtLeast(0L),
+                gradeId = gradeId,
+                gradeScore = gradeScore,
+                polarisAppId = com.bbttvv.app.core.network.DANMAKU_VOTE_POLARIS_APP_ID,
+                polarisPlatform = com.bbttvv.app.core.network.DANMAKU_VOTE_POLARIS_PLATFORM,
+                statistics = com.bbttvv.app.core.network.DANMAKU_INTERACTION_STATISTICS,
+                csrf = csrf,
             )
             if (response.code != 0) {
-                throw IllegalStateException(response.message.ifBlank { "打分失败(${response.code})" })
+                throw IllegalStateException("${response.message.ifBlank { "打分失败" }}（${response.code}）")
             }
-        }.onFailure { error ->
-            if (error is CancellationException) throw error
         }
     }
 

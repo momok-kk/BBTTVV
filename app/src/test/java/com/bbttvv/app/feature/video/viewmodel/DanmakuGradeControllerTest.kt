@@ -31,11 +31,12 @@ class DanmakuGradeControllerTest {
             assertEquals(8, requests.single().option.gradeScore)
             assertEquals(1L, requests.single().aid)
             assertEquals(2L, requests.single().cid)
-            assertEquals(1200L, requests.single().progressMs)
+            assertEquals(1000L, requests.single().progressMs)
             responses[0].complete(Result.failure(IllegalStateException("网络失败")))
             val error = controller.uiState.value as DanmakuVoteUiState.RetryableError
             assertEquals(3, error.selectedIndex)
             assertEquals(49, error.prompt.participantCount)
+            controller.syncPlaybackPosition(25_000)
             controller.retry()
             assertEquals(requests[0], requests[1])
             responses[1].complete(Result.success(Unit))
@@ -44,6 +45,30 @@ class DanmakuGradeControllerTest {
             assertEquals(50, submitted.prompt.participantCount)
             controller.selectOption(0)
             assertEquals(2, requests.size)
+        } finally {
+            controller.cancel()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `grade progress stays inside the card window after late input`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val requests = mutableListOf<DanmakuVoteSubmitRequest>()
+        val controller = DanmakuVoteController(scope, submitVote = { request ->
+            requests += request
+            Result.success(Unit)
+        }, nowElapsedMs = { 0L })
+        try {
+            val commands = listOf(grade())
+            controller.initialize(1, 2, commands)
+            controller.syncPlaybackPosition(1_500)
+            controller.initialize(1, 2, commands)
+            controller.syncPlaybackPosition(7_000)
+            controller.selectOption(1)
+
+            assertEquals(5_900L, requests.single().progressMs)
+            assertEquals(4, requests.single().option.gradeScore)
         } finally {
             controller.cancel()
             scope.cancel()

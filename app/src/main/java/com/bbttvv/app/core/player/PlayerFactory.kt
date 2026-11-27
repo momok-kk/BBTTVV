@@ -5,6 +5,8 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -15,9 +17,19 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.upstream.BandwidthMeter
+import androidx.media3.exoplayer.upstream.DefaultAllocator
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import com.bbttvv.app.core.network.NetworkModule
 import com.bbttvv.app.core.network.resolveAppUserAgent
 import com.bbttvv.app.core.store.PlayerSettingsCache
+
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+internal class PlayerBufferConfiguration(isOnDemand: Boolean = false) {
+    val policy = resolvePlayerBufferPolicy(isOnDemand = isOnDemand)
+    val allocator = DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
+    val bufferedBytes: Int get() = allocator.totalBytesAllocated
+}
 
 /**
  * 创建配置好的 ExoPlayer 实例
@@ -33,11 +45,12 @@ import com.bbttvv.app.core.store.PlayerSettingsCache
  * @return 配置好的 ExoPlayer 实例
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-fun createConfiguredPlayer(
+internal fun createConfiguredPlayer(
     context: Context,
     transferListener: TransferListener? = null,
     audioBalanceLevel: AudioBalanceLevel = VolumeBalanceController.getLevel(),
     audioPassthrough: Boolean = PlayerSettingsCache.getAudioPassthrough(),
+    bufferConfiguration: PlayerBufferConfiguration = PlayerBufferConfiguration(),
 ): ExoPlayer {
     val appContext = context.applicationContext
     val headers = mapOf(
@@ -46,18 +59,13 @@ fun createConfiguredPlayer(
     )
     val dataSourceFactory = OkHttpDataSource.Factory(NetworkModule.playbackOkHttpClient)
         .setDefaultRequestProperties(headers)
-        .apply {
-            if (transferListener != null) {
-                setTransferListener(transferListener)
-            }
-        }
 
     val audioAttributes = AudioAttributes.Builder()
         .setUsage(C.USAGE_MEDIA)
         .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
         .build()
 
-    val bufferPolicy = resolvePlayerBufferPolicy()
+    val bufferPolicy = bufferConfiguration.policy
 
     val volumeBalanceProcessor = VolumeBalanceAudioProcessor(level = audioBalanceLevel)
     VolumeBalanceController.registerProcessor(volumeBalanceProcessor)
@@ -81,8 +89,17 @@ fun createConfiguredPlayer(
         .setRenderersFactory(renderersFactory)
         .setTrackSelector(trackSelector)
         .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+        .apply {
+            if (transferListener != null) {
+                // Media3 passes this listener to explicit media sources as well as the default factory.
+                setBandwidthMeter(
+                    PlaybackBandwidthMeter(DefaultBandwidthMeter.getSingletonInstance(appContext), transferListener)
+                )
+            }
+        }
         .setLoadControl(
             DefaultLoadControl.Builder()
+                .setAllocator(bufferConfiguration.allocator)
                 .setBufferDurationsMs(
                     bufferPolicy.minBufferMs,
                     bufferPolicy.maxBufferMs,
@@ -105,6 +122,34 @@ fun createConfiguredPlayer(
             }
             playWhenReady = true
         }
+}
+
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+private class PlaybackBandwidthMeter(
+    private val bandwidthMeter: DefaultBandwidthMeter,
+    private val playbackTransferListener: TransferListener,
+) : BandwidthMeter by bandwidthMeter, TransferListener {
+    override fun getTransferListener(): TransferListener = this
+
+    override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {
+        bandwidthMeter.onTransferInitializing(source, dataSpec, isNetwork)
+        playbackTransferListener.onTransferInitializing(source, dataSpec, isNetwork)
+    }
+
+    override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {
+        bandwidthMeter.onTransferStart(source, dataSpec, isNetwork)
+        playbackTransferListener.onTransferStart(source, dataSpec, isNetwork)
+    }
+
+    override fun onBytesTransferred(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean, bytesTransferred: Int) {
+        bandwidthMeter.onBytesTransferred(source, dataSpec, isNetwork, bytesTransferred)
+        playbackTransferListener.onBytesTransferred(source, dataSpec, isNetwork, bytesTransferred)
+    }
+
+    override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {
+        bandwidthMeter.onTransferEnd(source, dataSpec, isNetwork)
+        playbackTransferListener.onTransferEnd(source, dataSpec, isNetwork)
+    }
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)

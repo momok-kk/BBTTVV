@@ -32,4 +32,23 @@ class PlayerBufferPolicyTest {
             assertEquals("heap=$heap", expectedMiB * mib, resolvePlayerBufferPolicy(heap).targetBufferBytes.toLong())
         }
     }
+
+    @Test
+    fun `on demand raises the target on eligible devices while keeping playback thresholds`() {
+        val mib = 1024L * 1024
+        val heap = 192 * mib
+        val defaultPolicy = resolvePlayerBufferPolicy(heap)
+
+        assertEquals(
+            defaultPolicy.copy(targetBufferBytes = (48 * mib).toInt()),
+            resolvePlayerBufferPolicy(heap, isOnDemand = true),
+        )
+        assertEquals(
+            resolvePlayerBufferPolicy(heap - 1),
+            resolvePlayerBufferPolicy(heap - 1, isOnDemand = true),
+        )
+        assertEquals(48 * mib, resolvePlayerBufferPolicy(256 * mib, isOnDemand = true).targetBufferBytes.toLong())
+        assertEquals(64 * mib, resolvePlayerBufferPolicy(384 * mib, isOnDemand = true).targetBufferBytes.toLong())
+        assertEquals(96 * mib, resolvePlayerBufferPolicy(Long.MAX_VALUE, isOnDemand = true).targetBufferBytes.toLong())
+    }
 }

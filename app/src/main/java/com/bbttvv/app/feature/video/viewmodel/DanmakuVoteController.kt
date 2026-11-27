@@ -56,9 +56,9 @@ internal class DanmakuVoteController(
     private var suspendedRemainingMs: Long? = null
 
     fun initialize(aid: Long, cid: Long, commands: List<DanmakuProto.CommandDm>) {
+        val parsed = if (aid > 0L && cid > 0L) parseDanmakuVotePrompts(commands) else emptyList()
+        if (this.aid == aid && this.cid == cid && prompts == parsed) return
         cancel()
-        if (aid <= 0L || cid <= 0L) return
-        val parsed = parseDanmakuVotePrompts(commands)
         if (parsed.isEmpty()) {
             Logger.d("DanmakuVote", "No supported vote commands cid=$cid commands=${commands.size}")
             return
@@ -120,7 +120,7 @@ internal class DanmakuVoteController(
 
     fun retry() {
         val error = _uiState.value as? DanmakuVoteUiState.RetryableError ?: return
-        submit(error.prompt, error.selectedIndex)
+        submit(error.prompt, error.selectedIndex, error.progressMs)
     }
 
     fun hide() {
@@ -180,14 +180,18 @@ internal class DanmakuVoteController(
         }
     }
 
-    private fun submit(prompt: DanmakuVotePrompt, index: Int) {
+    private fun submit(
+        prompt: DanmakuVotePrompt,
+        index: Int,
+        progressMs: Long = prompt.submissionProgressMs(lastPositionMs),
+    ) {
         val option = prompt.options.getOrNull(index) ?: return
         timeoutJob?.cancel()
         _uiState.value = DanmakuVoteUiState.Submitting(prompt, index)
         val request = DanmakuVoteSubmitRequest(
             aid = aid,
             cid = cid,
-            progressMs = lastPositionMs,
+            progressMs = progressMs,
             prompt = prompt,
             option = option,
         )
@@ -226,6 +230,7 @@ internal class DanmakuVoteController(
                     _uiState.value = DanmakuVoteUiState.RetryableError(
                         prompt = prompt,
                         selectedIndex = index,
+                        progressMs = request.progressMs,
                         message = error.message?.takeIf { it.isNotBlank() } ?: if (prompt.kind == DanmakuVoteKind.Grade) {
                             "打分失败，请重试"
                         } else "投票失败，请重试",
@@ -234,4 +239,14 @@ internal class DanmakuVoteController(
             )
         }
     }
+}
+
+private fun DanmakuVotePrompt.submissionProgressMs(positionMs: Long): Long {
+    val endMs = triggerPositionMs + durationMs
+    val inWindowMs = positionMs.coerceIn(triggerPositionMs, endMs)
+    if (kind == DanmakuVoteKind.Vote) return inWindowMs.coerceAtMost(endMs - 1L)
+
+    // The web player submits ratings rounded to seconds and leaves 100 ms at the end of the card.
+    val roundedMs = ((inWindowMs + 500L) / 1_000L).coerceAtLeast(1L) * 1_000L
+    return roundedMs.coerceIn(triggerPositionMs, endMs - 100L)
 }

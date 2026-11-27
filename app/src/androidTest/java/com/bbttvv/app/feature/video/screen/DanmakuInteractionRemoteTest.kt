@@ -19,6 +19,7 @@ import com.bbttvv.app.feature.video.danmaku.DanmakuProto
 import com.bbttvv.app.feature.video.viewmodel.DanmakuVoteController
 import com.bbttvv.app.feature.video.viewmodel.DanmakuVoteUiState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -29,6 +30,7 @@ class DanmakuInteractionRemoteTest {
     fun timedCommandsShowAtAuthorPositionAndAcceptRemoteInput() {
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
         val coordinator = PlayerFocusCoordinator()
+        val keyReleaseGuard = PlayerModalKeyReleaseGuard()
         var handler: DanmakuVoteKeyHandler? = null
         lateinit var controller: DanmakuVoteController
         val submissions = mutableListOf<Int>()
@@ -41,7 +43,17 @@ class DanmakuInteractionRemoteTest {
                 activity.setContent {
                     val state = controller.uiState.collectAsState().value
                     BackHandler(enabled = state !is DanmakuVoteUiState.Hidden, onBack = controller::hide)
-                    Box(Modifier.fillMaxSize().onPreviewKeyEvent { handler?.invoke(it.nativeKeyEvent) ?: false }) {
+                    Box(Modifier.fillMaxSize().onPreviewKeyEvent {
+                        val key = it.nativeKeyEvent
+                        if (!shouldRoutePlayerKeyToPreviewHandler(key)) return@onPreviewKeyEvent false
+                        if (keyReleaseGuard.consumeTrailingEvent(key.action, key.keyCode, key.repeatCount)) {
+                            true
+                        } else {
+                            val consumed = handler?.invoke(key) == true
+                            if (consumed) keyReleaseGuard.recordConsumedModalEvent(key.action, key.keyCode, key.repeatCount)
+                            consumed
+                        }
+                    }) {
                         DanmakuVoteOverlay(state, 16f / 9f, coordinator, controller::selectOption,
                             controller::retry, controller::hide, { handler = it })
                     }
@@ -58,6 +70,7 @@ class DanmakuInteractionRemoteTest {
             }
             val grade = device.wait(Until.findObject(By.text("给这段打几星？")), 5000)
             assertTrue(grade.visibleCenter.x < device.displayWidth / 2)
+            assertFalse(device.hasObject(By.textContains("上下选")))
             device.pressDPadDown()
             device.pressDPadCenter()
             scenario.onActivity { assertEquals(listOf(2), submissions) }
@@ -65,6 +78,7 @@ class DanmakuInteractionRemoteTest {
             scenario.onActivity { controller.syncPlaybackPosition(40000) }
             val vote = device.wait(Until.findObject(By.text("选哪一个？")), 5000)
             assertTrue(vote.visibleCenter.x > device.displayWidth / 2)
+            assertFalse(device.hasObject(By.textContains("上下选")))
             device.pressDPadDown()
             device.pressBack()
             assertTrue(device.wait(Until.gone(By.text("选哪一个？")), 5000))
@@ -72,7 +86,8 @@ class DanmakuInteractionRemoteTest {
                 assertEquals(DanmakuVoteUiState.Hidden, controller.uiState.value)
                 controller.syncPlaybackPosition(80000)
             }
-            assertTrue(device.wait(Until.hasObject(By.text("限时打分")), 2000))
+            val unpositionedGrade = device.wait(Until.findObject(By.text("限时打分")), 2000)
+            assertTrue(unpositionedGrade.visibleCenter.x > device.displayWidth / 2)
             assertTrue(device.wait(Until.gone(By.text("限时打分")), 5000))
             scenario.onActivity {
                 assertEquals(DanmakuVoteUiState.Hidden, controller.uiState.value)
